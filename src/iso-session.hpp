@@ -59,6 +59,8 @@ public:
 	bool isArmed(obs_source_t *source) const;
 	bool isArmedAny() const { return !entries_.empty(); }
 	size_t armedVisualCount() const;
+	// The names of the sources currently ticked, for remembering them.
+	std::vector<std::string> armedSourceNames() const;
 	std::string statusFor(obs_source_t *source) const;
 	RowState rowStateFor(obs_source_t *source) const;
 	void setConfig(const SessionConfig &cfg);

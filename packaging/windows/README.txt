@@ -26,6 +26,10 @@ USE
 
   Tick the ones you want. Press Record. Press it again when you are done.
 
+  Your ticks are remembered. Next time you open OBS, and after you
+  stop a recording, the same sources are ticked again. Untick them
+  all if you would rather start from a clean slate.
+
   Leave "Start and stop with the stream" ticked and it follows your
   stream instead, so you cannot forget.
 

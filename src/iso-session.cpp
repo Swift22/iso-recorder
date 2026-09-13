@@ -123,6 +123,15 @@ size_t IsoSession::armedVisualCount() const
 	return count;
 }
 
+std::vector<std::string> IsoSession::armedSourceNames() const
+{
+	std::vector<std::string> names;
+	names.reserve(entries_.size());
+	for (const auto &e : entries_)
+		names.push_back(e.name);
+	return names;
+}
+
 std::string IsoSession::statusFor(obs_source_t *source) const
 {
 	const Entry *e = find(source);

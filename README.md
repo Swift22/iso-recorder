@@ -71,6 +71,12 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   source's file immediately; unticking ends and finalizes it. With no session
   running, the tick is remembered and applies the moment one starts. A source added
   to the collection appears in the list on its own, and can be ticked mid-session.
+- **Your ticks are remembered**, per scene collection, so you tick once and not
+  again — they come back when you reopen OBS and again after you stop a recording.
+  Untick everything and the slate is cleared: nothing is restored by itself. If
+  **Start and stop with the stream** is on and a stream starts with nothing ticked,
+  the log warns and the dock says so, because otherwise the stream passes with no
+  files at all.
 - **Record / Stop recording** starts or stops every ticked source at once, and a red
   `● Recording · 0:12` line shows how long the session has been running. **Start and
   stop with the stream** (on by default) does the same from the stream's own start

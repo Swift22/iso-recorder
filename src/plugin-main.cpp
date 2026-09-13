@@ -23,23 +23,30 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 {
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
-		if (g_session->config().withStream && g_session->isArmedAny() &&
-		    !g_session->active()) {
-			const iso::SessionConfig &cfg = g_session->config();
-			std::string why;
-			std::string err;
-			if (!g_session->preflight(cfg, &why)) {
-				g_dock->setStatus(QString::fromStdString(why));
-			} else if (!g_session->start(cfg, &err)) {
-				if (g_session->active())
-					g_dock->setStatus(
-						QStringLiteral("Recording, but some sources failed: ") +
-						QString::fromStdString(err));
-				else
-					g_dock->setStatus(QString::fromStdString(err));
-			} else if (g_session->armedVisualCount() > iso::kEncoderWarnThreshold) {
+		if (g_session->config().withStream && !g_session->active()) {
+			if (!g_session->isArmedAny()) {
+				// Saying nothing here is how a whole stream goes by with no files.
+				blog(LOG_WARNING,
+				     "[iso-recorder] the stream started with no sources ticked, so nothing was recorded");
 				g_dock->setStatus(QStringLiteral(
-					"Recording anyway, but this is more videos than this machine is expected to handle."));
+					"The stream started with nothing ticked, so nothing is being recorded."));
+			} else {
+				const iso::SessionConfig &cfg = g_session->config();
+				std::string why;
+				std::string err;
+				if (!g_session->preflight(cfg, &why)) {
+					g_dock->setStatus(QString::fromStdString(why));
+				} else if (!g_session->start(cfg, &err)) {
+					if (g_session->active())
+						g_dock->setStatus(
+							QStringLiteral("Recording, but some sources failed: ") +
+							QString::fromStdString(err));
+					else
+						g_dock->setStatus(QString::fromStdString(err));
+				} else if (g_session->armedVisualCount() > iso::kEncoderWarnThreshold) {
+					g_dock->setStatus(QStringLiteral(
+						"Recording anyway, but this is more videos than this machine is expected to handle."));
+				}
 			}
 		}
 		g_dock->refreshSources();

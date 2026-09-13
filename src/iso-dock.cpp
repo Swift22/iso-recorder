@@ -23,6 +23,7 @@
 #include <QVBoxLayout>
 #include <QVariant>
 
+#include <algorithm>
 #include <cstring>
 #include <initializer_list>
 #include <string>
@@ -307,6 +308,38 @@ void IsoDock::addSource(QListWidget *list, obs_source_t *source, Kind kind)
 	applySourceState(item, source, kind);
 }
 
+void IsoDock::restoreArms(const std::vector<obs_source_t *> &pictureSources,
+			  const std::vector<obs_source_t *> &soundSources)
+{
+	auto tickIfRemembered = [this](obs_source_t *source) {
+		if (session_->isArmed(source))
+			return;
+		const std::string name = obs_source_get_name(source);
+		if (std::find(armed_.begin(), armed_.end(), name) == armed_.end())
+			return;
+		std::string err;
+		if (!session_->arm(source, &err))
+			blog(LOG_WARNING, "[iso-recorder] could not tick %s again: %s", name.c_str(),
+			     err.c_str());
+	};
+	for (obs_source_t *source : pictureSources)
+		tickIfRemembered(source);
+	for (obs_source_t *source : soundSources)
+		tickIfRemembered(source);
+}
+
+void IsoDock::rememberArmed(const std::string &name, bool armed)
+{
+	auto it = std::find(armed_.begin(), armed_.end(), name);
+	if (armed) {
+		if (it == armed_.end())
+			armed_.push_back(name);
+	} else if (it != armed_.end()) {
+		armed_.erase(it);
+	}
+	dirty_ = true;
+}
+
 void IsoDock::applySourceState(QListWidgetItem *item, obs_source_t *source, Kind kind)
 {
 	item->setCheckState(session_->isArmed(source) ? Qt::Checked : Qt::Unchecked);
@@ -362,9 +395,28 @@ void IsoDock::refreshSources()
 		},
 		&ctx);
 
+	// Ticked sources are remembered per scene collection, and ending a session
+	// clears the session's own set — so put the ticks back whenever the session is
+	// idle with nothing ticked. Someone who unticks everything has an empty
+	// remembered set, so nothing comes back on its own. A source only exists once
+	// its collection has loaded, hence the wait for a non-empty list.
+	const char *collection = obs_frontend_get_current_scene_collection();
+	const std::string collectionName = collection ? collection : "";
+	if (collectionName != armedCollection_) {
+		armedCollection_ = collectionName;
+		armed_ = loadArmedSources(armedCollection_);
+	}
+	if (!session_->active() && !session_->isArmedAny() && !armed_.empty() &&
+	    !(pictureSources.empty() && soundSources.empty())) {
+		restoreArms(pictureSources, soundSources);
+		if (session_->armedVisualCount() > kEncoderWarnThreshold)
+			blog(LOG_WARNING,
+			     "[iso-recorder] the remembered set is %zu video files at once, more than this machine is expected to keep up with",
+			     session_->armedVisualCount());
+	}
+
 	updating_ = true;
-	const bool unchanged = pictureSources == lastPicture_ && soundSources == lastSound_;
-	{
+	const bool unchanged = pictureSources == lastPicture_ && soundSources == lastSound_;	{
 		const QSignalBlocker pictureBlocker(picture_);
 		const QSignalBlocker soundBlocker(sound_);
 		if (unchanged) {
@@ -445,16 +497,22 @@ void IsoDock::onItemChanged(QListWidgetItem *item)
 		std::string err;
 		if (!session_->arm(source, &err)) {
 			setStatus(QString::fromStdString(err));
-		} else if (session_->armedVisualCount() > kEncoderWarnThreshold) {
-			const auto choice = QMessageBox::warning(
-				this, tr("ISO Recorder"),
-				tr("That is more video recordings than this machine is expected to keep up with. Record anyway?"),
-				QMessageBox::Yes | QMessageBox::No);
-			if (choice != QMessageBox::Yes)
-				session_->disarm(source);
+		} else {
+			rememberArmed(obs_source_get_name(source), true);
+			if (session_->armedVisualCount() > kEncoderWarnThreshold) {
+				const auto choice = QMessageBox::warning(
+					this, tr("ISO Recorder"),
+					tr("That is more video recordings than this machine is expected to keep up with. Record anyway?"),
+					QMessageBox::Yes | QMessageBox::No);
+				if (choice != QMessageBox::Yes) {
+					session_->disarm(source);
+					rememberArmed(obs_source_get_name(source), false);
+				}
+			}
 		}
 	} else {
 		session_->disarm(source);
+		rememberArmed(obs_source_get_name(source), false);
 	}
 	QTimer::singleShot(0, this, &IsoDock::refreshSources);
 }
@@ -503,6 +561,7 @@ void IsoDock::onTick()
 	if (dirty_) {
 		dirty_ = false;
 		saveConfig(configFromWidgets());
+		saveArmedSources(armedCollection_, armed_);
 		obs_frontend_save();
 	}
 }
@@ -517,6 +576,7 @@ void IsoDock::saveSettings()
 {
 	dirty_ = false;
 	saveConfig(configFromWidgets());
+	saveArmedSources(armedCollection_, armed_);
 	obs_frontend_save();
 }
 

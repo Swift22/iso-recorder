@@ -40,6 +40,9 @@ private slots:
 private:
 	void addSource(QListWidget *list, obs_source_t *source, Kind kind);
 	void applySourceState(QListWidgetItem *item, obs_source_t *source, Kind kind);
+	void restoreArms(const std::vector<obs_source_t *> &pictureSources,
+			 const std::vector<obs_source_t *> &soundSources);
+	void rememberArmed(const std::string &name, bool armed);
 	SessionConfig configFromWidgets() const;
 	SessionConfig sessionConfigFromWidgets() const;
 	void applyConfig(const SessionConfig &cfg);
@@ -62,6 +65,8 @@ private:
 	std::vector<obs_source_t *> held_; // strong refs backing the listed raw pointers
 	std::vector<obs_source_t *> lastPicture_;
 	std::vector<obs_source_t *> lastSound_;
+	std::vector<std::string> armed_; // the ticked set, remembered per collection
+	std::string armedCollection_;
 	bool updating_ = false;
 	bool dirty_ = false;
 	bool transientStatus_ = false;
