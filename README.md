@@ -12,7 +12,8 @@ process, per source, and a dock owns it rather than a filter).
 
 Headers come from an `obs-studio` source checkout (`OBS_SRC` on macOS, `-ObsSrc` on
 Windows); the build links the OBS app you stream with, which ships no headers. The
-checkout tag must match the installed OBS (32.2.2 on this machine). `build-mac.sh`
+checkout tag must match the installed OBS (32.2.2 was used for the current release).
+`build-mac.sh`
 also fetches the header-only SIMDe library into `deps/simde`, which libobs headers
 require.
 
@@ -26,14 +27,14 @@ Build with Qt6 (Homebrew `qtbase`), CMake and Ninja on PATH.
 ### macOS
 
 ```
-OBS_SRC="$HOME/Developer/obs-studio" ./iso-recorder/build-mac.sh
+OBS_SRC="$HOME/Developer/obs-studio" ./build-mac.sh
 ```
 
-The result is `iso-recorder/build-mac/iso-recorder.plugin`. Pass `--install` to copy
+The result is `build-mac/iso-recorder.plugin`. Pass `--install` to copy
 it into `$HOME/Library/Application Support/obs-studio/plugins/`:
 
 ```
-OBS_SRC="$HOME/Developer/obs-studio" ./iso-recorder/build-mac.sh --install
+OBS_SRC="$HOME/Developer/obs-studio" ./build-mac.sh --install
 ```
 
 Restart OBS afterwards. Without `--install`, nothing is installed.
@@ -46,15 +47,15 @@ the Qt already inside OBS.app at runtime rather than Homebrew's, then re-signs a
 Headers in `C:\obs-studio`, Qt6 + CMake + Ninja installed, then:
 
 ```
-powershell -File iso-recorder\build-win.ps1 -ObsSrc C:\obs-studio
+powershell -File build-win.ps1 -ObsSrc C:\obs-studio
 ```
 
-The result is `iso-recorder/build-win/iso-recorder.dll`. Pass `-Install` to copy the
+The result is `build-win/iso-recorder.dll`. Pass `-Install` to copy the
 DLL into `%ProgramData%\obs-studio\plugins\iso-recorder\bin\64bit\` and the `data\`
 folder into `%ProgramData%\obs-studio\plugins\iso-recorder\data\`:
 
 ```
-powershell -File iso-recorder\build-win.ps1 -ObsSrc C:\obs-studio -Install
+powershell -File build-win.ps1 -ObsSrc C:\obs-studio -Install
 ```
 
 Restart OBS afterwards. Without `-Install`, nothing is installed.
@@ -127,7 +128,7 @@ Run this on both platforms with a running OBS:
 14. **handoff:** the whole folder imports into Resolve; the editor confirms the stems are useful
 15. **new game:** press it mid-record → a `02_Game/` folder appears, its files start again at
     `01_`, and each one still carries its true offset from the session clock
-15. forced quit mid-record → the `.mov` files still play; WAV is checked (see Further Notes)
+16. forced quit mid-record → the `.mov` files still play; WAV is checked (see Further Notes)
 
 ## Measurements
 
@@ -203,3 +204,39 @@ machine that has quietly stopped keeping up looks exactly like one that is fine.
 four this box sustained, because the stream's own encode shares the same hardware and the
 measurement was taken with it idle. Tick more visual sources than that and the dock warns
 and asks to confirm; it never refuses, because the operator may know better.
+
+## Contributing
+
+Issues and pull requests are welcome. This is a small plugin and the bar is simple:
+a change that makes recording more reliable, or the UI easier to understand.
+
+- **Bug reports** — use the bug template. The single most useful thing you can attach is
+  the plugin's line in the OBS log (`[iso-recorder] loaded (v…)`) plus what you ticked and
+  what came out. Windows paths in a log are fine; skim it first if you would rather not
+  share your user name.
+- **Pull requests** — keep them focused, one change per PR. Say what you tested and on
+  which platform. `docs/spec.md` is the design authority and `docs/adr/` records the
+  decisions that are expensive to reverse; if a change contradicts one of those, raise it
+  in the PR rather than quietly diverging.
+- **Tests** — `session-writer` and `wav-writer` are pure and covered. If you touch them,
+  or add another pure helper, add or extend a test. Build the plugin once and then run:
+
+  ```
+  ctest --test-dir build-mac --output-on-failure
+  ```
+
+  `session-writer`'s tests assert exact bytes of `session.json` and `README.txt`; update
+  the expected strings deliberately, not by pasting the new output over the old.
+- **Style** — match the file you are editing: tabs, C++17, no comments unless a line
+  encodes something non-obvious (an OBS quirk, a format constraint). Comments explaining
+  *what* the code says are noise here; the design record carries the *why*.
+- **Platforms** — Windows x64 and macOS arm64, against OBS 32.x. Anything that touches the
+  OBS API should be checked against the matching `obs-studio` tag's headers.
+
+By contributing you agree your work is licensed under the GPL-2.0, the same as the rest of
+the project (see `LICENSE`).
+
+## Licence
+
+GPL-2.0. The plugin links libobs, which is GPL-2.0, so it has to be too.
+

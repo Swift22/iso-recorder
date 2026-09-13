@@ -1,0 +1,66 @@
+name: Bug report
+description: Something recorded wrong, did not record, or the dock misbehaved
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The two things that make a bug fixable fast are the
+        plugin version from the OBS log and what you ticked when it happened.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: |
+        From the OBS log, the line that reads `[iso-recorder] loaded (v…)`.
+        If it says nothing, the plugin did not load — say so.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: obs-version
+    attributes:
+      label: OBS version
+      description: "Help → About in OBS."
+      placeholder: "32.2.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows x64
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Other (say so below)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: |
+        Which sources were ticked, what you expected, what came out. If a file was
+        written, say whether it plays and whether `session.json` calls it
+        `complete`, `aborted` or `failed`.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: OBS log
+      description: |
+        The relevant part of the log around the failure. Windows:
+        `%APPDATA%\obs-studio\logs`. macOS: `~/Library/Application Support/obs-studio/logs`.
+        Logs contain file paths, which often include your user name — skim and trim before pasting.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Encoder in use, number of ticked sources, whether the stream was running.
+    validations:
+      required: false

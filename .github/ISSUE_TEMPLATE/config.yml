@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to build and test
+    url: https://github.com/Swift22/iso-recorder/blob/main/CONTRIBUTING.md
+    about: Build prerequisites per platform, and how the tests run.
+  - name: Download the installer
+    url: https://github.com/Swift22/iso-recorder/releases/latest
+    about: The current Windows build, one installer or one zip.

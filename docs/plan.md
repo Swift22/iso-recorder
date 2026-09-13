@@ -43,12 +43,13 @@ sync are not. Build in this order and **stop to measure before finishing the doc
 Copied from the spec; every task's requirements include these.
 
 - Target **OBS 32.x** on both platforms; build the dock with **Qt6**.
-- New top-level folder `iso-recorder/`. Nothing in `studio/`, `emote-forge/`, `site/`.
+- Nothing outside this repository is touched; there is no other build to keep in step.
 - Plugin id `iso-recorder`; dock id `iso-recorder-dock`; config section `iso-recorder`.
 - Files: `NN_<sanitized>.<ext>`, video and audio numbered **independently** in dock order; a second
   segment of one source is suffixed `_2`, then `_3`. Extensions `.mov` (video) and `.wav` (audio).
-- Default base path: macOS `~/Movies/Mist ISO/<YYYY-MM-DD HH-MM-SS>/`, Windows
-  `E:\Stream\Mist\ISO\<YYYY-MM-DD HH-MM-SS>\`. Both overridable in the dock.
+- Default base path: a folder of its own in the platform's videos location — `~/Movies/ISO
+  Recorder/<YYYY-MM-DD HH-MM-SS>/` on macOS, `%USERPROFILE%\Videos\ISO Recorder\<YYYY-MM-DD
+  HH-MM-SS>\` on Windows. Overridable in the dock.
 - Audio default: **WAV, 24-bit PCM, 48 kHz** (`pcm_s24le`). Video default: the stream's hardware
   encoder family, falling back to the platform preferred (VideoToolbox on macOS; NVENC, then QSV,
   then AMF on Windows), then `obs_x264`.
@@ -218,7 +219,7 @@ is why later tasks only need to write the `.cpp`. (OBS's plugin template does th
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>iso-recorder</string>
-  <key>CFBundleIdentifier</key><string>tech.misty.iso-recorder</string>
+  <key>CFBundleIdentifier</key><string>io.github.swift22.iso-recorder</string>
   <key>CFBundleName</key><string>ISO Recorder</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
@@ -1976,7 +1977,7 @@ iso-recorder/build-mac.sh && cp -R iso-recorder/build-mac/iso-recorder.plugin \
 ```
 
 Restart OBS. Arm two sources, record 10 s, stop. Expected: a timestamped folder under
-`~/Movies/Mist ISO/`, files `01_<source>.mov` and `01_<source>.wav` (numbered per category),
+`~/Movies/ISO Recorder/`, files `01_<source>.mov` and `01_<source>.wav` (numbered per category),
 `session.json` listing both with `startOffset` near `0.0` and `status: complete`, and a
 `README.txt` that lists each file with `0:00.0`. Then arm one source, record 5 s, disarm it, re-arm
 it, record 5 s more, stop. Expected: `01_<source>.mov` and `01_<source>_2.mov`, two manifest
@@ -2115,9 +2116,9 @@ namespace iso {
 static QString defaultBasePath()
 {
 #ifdef __APPLE__
-	return QDir::homePath() + "/Movies/Mist ISO";
+	return QDir::homePath() + "/Movies/ISO Recorder";
 #else
-	return "E:/Stream/Mist/ISO";
+	return "E:/Videos/ISO Recorder";
 #endif
 }
 

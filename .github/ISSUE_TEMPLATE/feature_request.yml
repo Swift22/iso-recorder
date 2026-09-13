@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest something the plugin should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Useful feature requests start from the editing problem, not the button. Say
+        what you are trying to do and why the current behaviour gets in the way.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where the plugin gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: How you would expect it to work. A sketch of the dock is welcome.
+    validations:
+      required: false
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      description: The manual step this would remove, if any.
+    validations:
+      required: false
