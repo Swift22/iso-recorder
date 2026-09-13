@@ -1,0 +1,90 @@
+#pragma once
+
+#include <obs.h>
+
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "session-writer.hpp"
+
+namespace iso {
+
+// Four concurrent 1080p60 hardware encodes were measured clean on an RTX 2050; six
+// dropped about a third of the frames from one file without failing it, so the stream's
+// own encode leaves room for three.
+constexpr size_t kEncoderWarnThreshold = 3;
+
+struct SessionConfig {
+	std::string basePath;
+	std::string videoEncoderId;
+	obs_data_t *videoSettings = nullptr;            // borrowed for the call
+	std::string audioCodec = "pcm_s24le";
+	uint64_t bitrateBitsPerSec = 6000ull * 1000ull; // drives the disk check in Task 9
+	bool recordComposite = false;
+	bool withStream = true;
+};
+
+class IsoSession {
+public:
+	IsoSession();
+	~IsoSession();
+
+	bool active() const { return active_; }
+	bool preflight(const SessionConfig &cfg, std::string *why);
+	bool start(const SessionConfig &cfg, std::string *error);
+	void stop();
+	void refreshManifest();
+	bool arm(obs_source_t *source, std::string *error);
+	void disarm(obs_source_t *source);
+	void onSourceRemoved(obs_source_t *source);
+	void onSceneChanged(obs_source_t *scene);
+	uint64_t epochNs() const { return epochNs_; }
+	const std::string &folder() const { return folder_; }
+	std::vector<Recording> recordings() const;
+
+	bool isArmed(obs_source_t *source) const;
+	bool isArmedAny() const { return !entries_.empty(); }
+	size_t armedVisualCount() const;
+	std::string statusFor(obs_source_t *source) const;
+	void setConfig(const SessionConfig &cfg);
+	const SessionConfig &config() const { return config_; }
+
+private:
+	struct Entry {
+		obs_source_t *source = nullptr;
+		std::string name;
+		std::string label;
+		Kind kind = Kind::Video;
+		int index = 1;
+		int segment = 1;
+		std::unique_ptr<class SourceRecorder> recorder;
+	};
+	Entry *find(obs_source_t *source);
+	const Entry *find(obs_source_t *source) const;
+	bool startEntry(Entry &e, std::string *error, bool atSessionStart);
+	double offsetFor(Kind kind, uint64_t offsetNs) const;
+	void rewriteManifest();
+
+	bool active_ = false;
+	std::string folder_;
+	uint64_t epochNs_ = 0;
+	size_t failedSeen_ = 0;
+	std::vector<Entry> entries_;
+	std::unique_ptr<class SourceRecorder> composite_;
+	std::vector<Recording> finished_;
+	std::map<std::pair<std::string, Kind>, int> segmentCount_;
+	std::map<std::pair<std::string, Kind>, int> indexFor_;
+	std::map<Kind, int> nextIndex_{{Kind::Video, 1}, {Kind::Audio, 1}};
+	std::string videoEncoderId_ = "obs_x264";
+	obs_data_t *videoSettings_ = nullptr; // owned by the session (strong ref)
+	std::string audioCodec_ = "pcm_s24le";
+	SessionConfig config_;
+	SessionInfo info_;
+	bool globalAudioHeld_ = false;
+};
+
+} // namespace iso
