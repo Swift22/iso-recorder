@@ -43,6 +43,8 @@ private:
 		       struct audio_output_data *mixes);
 	void mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t *newTs);
 	void mixPlain(struct audio_output_data *mixes, size_t mixIdx);
+	bool openVideoPipeline(const std::string &encoderId);
+	void closeVideoPipeline();
 	bool isComposite() const
 	{
 		return hasVideo_ && (obs_source_get_output_flags(source_) & OBS_SOURCE_COMPOSITE);

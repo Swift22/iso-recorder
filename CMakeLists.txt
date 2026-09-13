@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(iso-recorder VERSION 0.2.0 LANGUAGES C CXX)
+project(iso-recorder VERSION 0.2.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +81,9 @@ add_library(iso-recorder MODULE
   src/wav-writer.cpp
 )
 target_link_libraries(iso-recorder PRIVATE Qt6::Widgets)
+# So the log can say which build is running: telling a stale install from a new
+# one is otherwise guesswork once the dock is on screen.
+target_compile_definitions(iso-recorder PRIVATE ISO_VERSION="${PROJECT_VERSION}")
 if(APPLE)
   # The OBS paths are raw link options, not target_link_libraries entries: a linked path
   # containing ".framework" makes CMake add OBS.app's header-less Qt frameworks to the

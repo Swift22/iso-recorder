@@ -88,7 +88,7 @@ bool obs_module_load(void)
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 	signal_handler_connect(obs_get_signal_handler(), "source_remove", onSourceRemoveSignal,
 			       nullptr);
-	blog(LOG_INFO, "[iso-recorder] loaded");
+	blog(LOG_INFO, "[iso-recorder] loaded (v" ISO_VERSION ")");
 	return true;
 }
 

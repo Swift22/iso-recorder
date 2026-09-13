@@ -77,7 +77,10 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   and stop, so you never forget to press record. **Also record the live scene** (off
   by default) adds a reference recording of the program, written as `00_Session.mov`.
 - **Session** holds the output folder (with Browse…) and the video encoder — "Same as
-  the stream" by default. Audio is always saved as 24-bit WAV.
+  the stream" by default. Audio is always saved as 24-bit WAV. A hardware encoder can
+  refuse a source it cannot handle (most often a picture smaller than its minimum frame
+  size, such as a small avatar or overlay). That source falls back to `obs_x264` on its
+  own rather than failing — the log says so when it happens.
 - **New game** (blue) splits the session into game folders without stopping it. Each
   press closes every running file and opens the next folder — `01_Game`, `02_Game`,
   and so on — restarting the same ticked sources inside it. The clock does **not**

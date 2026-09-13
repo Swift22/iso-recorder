@@ -109,19 +109,52 @@ bool SourceRecorder::start(std::string *error)
 	obs_source_inc_showing(source_);
 	showingInced_ = true;
 
-	videoEnc_ = obs_video_encoder_create(videoEncoderId_.c_str(), name_.c_str(),
-					     videoSettings_, nullptr);
-	if (!videoEnc_)
-		return fail("the encoder did not open");
+	if (!openVideoPipeline(videoEncoderId_)) {
+		// A hardware encoder can refuse a source it cannot handle — most often
+		// because the picture is smaller than its minimum frame size, which a
+		// small avatar or overlay source easily is. The software encoder has no
+		// such floor, so give the source one more chance before failing it.
+		const std::string first = error_;
+		closeVideoPipeline();
+		if (videoEncoderId_ != "obs_x264" && openVideoPipeline("obs_x264")) {
+			blog(LOG_WARNING,
+			     "[iso-recorder] %s: the %s encoder would not take this source (%s); recording it with obs_x264 instead",
+			     name_.c_str(), videoEncoderId_.c_str(), first.c_str());
+			codec_ = "h264";
+			return true;
+		}
+		const std::string second = error_;
+		closeVideoPipeline();
+		std::string msg = first;
+		if (!second.empty() && second != first)
+			msg += "; the software encoder also failed: " + second;
+		return fail(std::move(msg));
+	}
+	codec_ = codecForEncoderId(videoEncoderId_);
+	return true;
+}
+
+bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
+{
+	error_.clear();
+
+	videoEnc_ = obs_video_encoder_create(encoderId.c_str(), name_.c_str(), videoSettings_, nullptr);
+	if (!videoEnc_) {
+		error_ = "the encoder did not open";
+		return false;
+	}
 	obs_encoder_set_video(videoEnc_, video_);
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "path", path_.c_str());
 	output_ = obs_output_create("mov_output", name_.c_str(), settings, nullptr);
 	obs_data_release(settings);
-	if (!output_)
-		return fail("the container did not open");
+	if (!output_) {
+		error_ = "the container did not open";
+		return false;
+	}
 	obs_output_set_video_encoder(output_, videoEnc_);
+
 	// An OBS AV output refuses to start without both encoders, so even a
 	// source with no sound gets an audio track; the tap writes silence.
 	struct audio_output_info oi {};
@@ -131,28 +164,56 @@ bool SourceRecorder::start(std::string *error)
 	oi.format = AUDIO_FORMAT_FLOAT_PLANAR;
 	oi.input_param = this;
 	oi.input_callback = onAudioInput;
-	if (audio_output_open(&audio_, &oi) != AUDIO_OUTPUT_SUCCESS)
-		return fail("the audio device did not open");
+	if (audio_output_open(&audio_, &oi) != AUDIO_OUTPUT_SUCCESS) {
+		error_ = "the audio device did not open";
+		return false;
+	}
 	obs_data_t *as = obs_data_create();
 	audioEnc_ = obs_audio_encoder_create("ffmpeg_aac", name_.c_str(), as, 0, nullptr);
 	obs_data_release(as);
-	if (!audioEnc_)
-		return fail("the audio encoder did not open");
+	if (!audioEnc_) {
+		error_ = "the audio encoder did not open";
+		return false;
+	}
 	obs_encoder_set_audio(audioEnc_, audio_);
 	obs_output_set_audio_encoder(output_, audioEnc_, 0);
+
 	if (!obs_output_start(output_)) {
 		const char *last = obs_output_get_last_error(output_);
-		std::string msg = last ? last : "";
-		if (msg.empty())
-			msg = "the output refused to start";
-		return fail(std::move(msg));
+		error_ = last ? last : "";
+		if (error_.empty())
+			error_ = "the output refused to start";
+		return false;
 	}
 	started_ = true;
 	outputStarted_ = true;
 	os_event_init(&stopEvent_, OS_EVENT_TYPE_AUTO);
 	signal_handler_connect(obs_output_get_signal_handler(output_), "stop", onOutputStopped, this);
-	codec_ = codecForEncoderId(videoEncoderId_);
 	return true;
+}
+
+void SourceRecorder::closeVideoPipeline()
+{
+	// Only ever called after a start that failed, so the output never ran and
+	// releasing it cannot block (the force_stop in stop() is what would hang).
+	if (output_) {
+		obs_output_release(output_);
+		output_ = nullptr;
+	}
+	if (audioEnc_) {
+		obs_encoder_release(audioEnc_);
+		audioEnc_ = nullptr;
+	}
+	if (videoEnc_) {
+		obs_encoder_release(videoEnc_);
+		videoEnc_ = nullptr;
+	}
+	if (audio_) {
+		audio_output_close(audio_);
+		audio_ = nullptr;
+	}
+	started_ = false;
+	outputStarted_ = false;
 }
 
 void SourceRecorder::onOutputStopped(void *param, calldata_t *calldata)
