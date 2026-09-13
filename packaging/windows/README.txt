@@ -24,7 +24,7 @@ USE
     Picture   scenes and anything with a picture
     Sound     audio-only sources, like a microphone
 
-  Tick the ones you want. Press Record. Press Stop when you are done.
+  Tick the ones you want. Press Record. Press it again when you are done.
 
   Leave "Start and stop with the stream" ticked and it follows your
   stream instead, so you cannot forget.

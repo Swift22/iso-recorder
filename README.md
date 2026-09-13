@@ -64,19 +64,20 @@ Restart OBS afterwards. Without `-Install`, nothing is installed.
 Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everything.
 
 - **Picture / Sound** — every source in the collection, listed under Picture when it
-  has a picture and under Sound when it is audio-only. Each row has a checkbox, its
-  current state, and, while it is recording, the file it is writing.
-- **Tick a source to arm it live.** With a session running, ticking starts that
+  has a picture and under Sound when it is audio-only. Each row has a checkbox and
+  shows what it is doing: a red `●` while it is writing a file, `not recorded` if it
+  stopped early, nothing while it is idle. Hover a row for its size and file name.
+- **Tick a source to record it live.** With a session running, ticking starts that
   source's file immediately; unticking ends and finalizes it. With no session
   running, the tick is remembered and applies the moment one starts. A source added
-  to the collection appears in the list on its own, and can be armed mid-session.
-- **Record / Stop** starts or stops every armed source at once. **Start and stop
-  with the stream** (on by default) does the same from the stream's own start and
-  stop, so you never forget to press record. **Also record the live scene** (off by
-  default) adds a reference recording of the program, written as `00_Session.mov`.
-- **Session** holds the output folder (with Browse…), the video encoder — "Same as
-  the stream" by default — and the audio format (WAV 24-bit).
-- **Where files land** — one folder per session under the base path, named by start
+  to the collection appears in the list on its own, and can be ticked mid-session.
+- **Record / Stop recording** starts or stops every ticked source at once, and a red
+  `● Recording · 0:12` line shows how long the session has been running. **Start and
+  stop with the stream** (on by default) does the same from the stream's own start
+  and stop, so you never forget to press record. **Also record the live scene** (off
+  by default) adds a reference recording of the program, written as `00_Session.mov`.
+- **Session** holds the output folder (with Browse…) and the video encoder — "Same as
+  the stream" by default. Audio is always saved as 24-bit WAV.
   time. The default is a folder of its own in your videos folder, e.g.
   `~/Movies/ISO Recorder/2026-09-12 14-32-05/` on macOS or
   `C:\Users\you\Videos\ISO Recorder\2026-09-12 14-32-05\` on Windows. Video and audio
@@ -96,10 +97,10 @@ Run this on both platforms with a running OBS:
 2. two overlapping visual sources → two files, each the pre-composite picture
 3. one video + one audio-only source → a `.mov` and a `.wav`
 4. all sources at once → all files
-5. arm a source after the session has started → its file starts then, `startOffset` is non-zero, and
+5. tick a source after the session has started → its file starts then, `startOffset` is non-zero, and
    it still lines up in Resolve
 6. disarm and re-arm one source in a session → two files, both entries in the manifest
-7. add a source to the collection mid-session → it appears in the dock and can be armed
+7. add a source to the collection mid-session → it appears in the dock and can be ticked
 8. scene switch mid-record → every armed source keeps recording
 9. source deleted mid-record → recorder stops, marked `aborted`, others continue
 10. mic unplugged mid-record → that file ends, others continue
@@ -182,5 +183,5 @@ machine that has quietly stopped keeping up looks exactly like one that is fine.
 
 **The threshold is 3** (`kEncoderWarnThreshold` in `src/iso-session.hpp`) — one below the
 four this box sustained, because the stream's own encode shares the same hardware and the
-measurement was taken with it idle. Arm more visual sources than that and the dock warns
+measurement was taken with it idle. Tick more visual sources than that and the dock warns
 and asks to confirm; it never refuses, because the operator may know better.

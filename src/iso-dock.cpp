@@ -5,7 +5,9 @@
 #include <obs.h>
 #include <obs-frontend-api.h>
 
+#include <QBrush>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -191,6 +193,17 @@ static SessionConfig resolvedConfig(SessionConfig cfg)
 	return cfg;
 }
 
+static QString formatElapsed(double seconds)
+{
+	const int total = (int)seconds;
+	const int hours = total / 3600;
+	const int minutes = (total % 3600) / 60;
+	const int secs = total % 60;
+	if (hours > 0)
+		return QString::asprintf("%d:%02d:%02d", hours, minutes, secs);
+	return QString::asprintf("%d:%02d", minutes, secs);
+}
+
 IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), session_(session)
 {
 	auto *layout = new QVBoxLayout(this);
@@ -208,28 +221,35 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 
 	encoder_ = new QComboBox(this);
 	fillEncoders(encoder_);
-	audio_ = new QComboBox(this);
-	audio_->addItem("WAV 24-bit", "pcm_s24le");
 	withStream_ = new QCheckBox(tr("Start and stop with the stream"), this);
 	withStream_->setChecked(true);
 	recordScene_ = new QCheckBox(tr("Also record the live scene"), this);
 
 	record_ = new QPushButton(tr("Record"), this);
-	status_ = new QLabel(tr("Pick the sources to keep."), this);
+	recording_ = new QLabel(this);
+	recording_->setStyleSheet(QStringLiteral("color: #c0392b; font-weight: bold;"));
+	recording_->hide();
+	status_ = new QLabel(tr("Tick a source to keep."), this);
 	// An unwrapped label takes its size hint from the whole sentence, which widens the
 	// dock whenever a source name lands in the status text.
 	status_->setWordWrap(true);
+
+	auto *encoderLabel = new QLabel(tr("Video encoder"), this);
+	auto *audioNote = new QLabel(tr("Audio is saved as 24-bit WAV."), this);
+	audioNote->setStyleSheet(QStringLiteral("color: #808080;"));
 
 	layout->addWidget(pictureLabel);
 	layout->addWidget(picture_);
 	layout->addWidget(soundLabel);
 	layout->addWidget(sound_);
 	layout->addLayout(pathRow);
+	layout->addWidget(encoderLabel);
 	layout->addWidget(encoder_);
-	layout->addWidget(audio_);
+	layout->addWidget(audioNote);
 	layout->addWidget(withStream_);
 	layout->addWidget(recordScene_);
 	layout->addWidget(record_);
+	layout->addWidget(recording_);
 	layout->addWidget(status_);
 
 	applyConfig(loadConfig());
@@ -245,12 +265,11 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	connect(browse_, &QPushButton::clicked, this, &IsoDock::onBrowse);
 	connect(path_, &QLineEdit::textChanged, this, &IsoDock::onConfigChanged);
 	connect(encoder_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
-	connect(audio_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(withStream_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 	connect(recordScene_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 
 	timer_ = new QTimer(this);
-	timer_->setInterval(2000);
+	timer_->setInterval(1000);
 	connect(timer_, &QTimer::timeout, this, &IsoDock::onTick);
 	timer_->start();
 	refreshSources();
@@ -282,6 +301,23 @@ void IsoDock::addSource(QListWidget *list, obs_source_t *source, Kind kind)
 void IsoDock::applySourceState(QListWidgetItem *item, obs_source_t *source, Kind kind)
 {
 	item->setCheckState(session_->isArmed(source) ? Qt::Checked : Qt::Unchecked);
+
+	const QString name = QString::fromUtf8(obs_source_get_name(source));
+	switch (session_->rowStateFor(source)) {
+	case RowState::Recording:
+		item->setText(QStringLiteral("● ") + name);
+		item->setForeground(QColor(0xc0, 0x39, 0x2b));
+		break;
+	case RowState::Failed:
+		item->setText(name + tr("  —  not recorded"));
+		item->setForeground(QColor(0xb7, 0x79, 0x1f));
+		break;
+	default:
+		item->setText(name);
+		item->setForeground(QBrush());
+		break;
+	}
+
 	QString tip;
 	if (kind == Kind::Video)
 		tip = QString::number(obs_source_get_width(source)) + "×" +
@@ -356,15 +392,20 @@ void IsoDock::refreshSources()
 	path_->setEnabled(!active);
 	browse_->setEnabled(!active);
 	encoder_->setEnabled(!active);
-	audio_->setEnabled(!active);
 	withStream_->setEnabled(!active);
 	recordScene_->setEnabled(!active);
-	record_->setText(active ? tr("Stop") : tr("Record"));
+	record_->setText(active ? tr("Stop recording") : tr("Record"));
+	if (active) {
+		recording_->setText(tr("● Recording · ") + formatElapsed(session_->elapsedSeconds()));
+		recording_->show();
+	} else {
+		recording_->hide();
+	}
 	if (!active && !armed) {
 		record_->setEnabled(false);
-		record_->setToolTip(tr("Arm at least one source to record."));
+		record_->setToolTip(tr("Tick at least one source to record."));
 		if (!transientStatus_)
-			status_->setText(tr("Arm a source to record."));
+			status_->setText(tr("Tick a source to record."));
 	} else {
 		record_->setEnabled(true);
 		record_->setToolTip(QString());
@@ -433,8 +474,10 @@ void IsoDock::onRecordClicked()
 void IsoDock::onTick()
 {
 	refreshSources();
-	session_->refreshManifest();
+	const std::string failure = session_->refreshManifest();
 	transientStatus_ = false;
+	if (!failure.empty())
+		setStatus(tr("Source failed: ") + QString::fromStdString(failure));
 	if (dirty_) {
 		dirty_ = false;
 		saveConfig(configFromWidgets());
@@ -470,8 +513,6 @@ void IsoDock::applyConfig(const SessionConfig &cfg)
 					    : QString::fromStdString(cfg.basePath));
 	const int encoderIndex = encoder_->findData(QString::fromStdString(cfg.videoEncoderId));
 	encoder_->setCurrentIndex(encoderIndex < 0 ? 0 : encoderIndex);
-	const int audioIndex = audio_->findData(QString::fromStdString(cfg.audioCodec));
-	audio_->setCurrentIndex(audioIndex < 0 ? 0 : audioIndex);
 	withStream_->setChecked(cfg.withStream);
 	recordScene_->setChecked(cfg.recordComposite);
 	updating_ = false;
@@ -482,7 +523,6 @@ SessionConfig IsoDock::configFromWidgets() const
 	SessionConfig cfg;
 	cfg.basePath = path_->text().toStdString();
 	cfg.videoEncoderId = encoder_->currentData().toString().toStdString();
-	cfg.audioCodec = audio_->currentData().toString().toStdString();
 	cfg.withStream = withStream_->isChecked();
 	cfg.recordComposite = recordScene_->isChecked();
 	return cfg;

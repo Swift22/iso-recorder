@@ -51,10 +51,10 @@ private:
 	QLineEdit *path_ = nullptr;
 	QPushButton *browse_ = nullptr;
 	QComboBox *encoder_ = nullptr;
-	QComboBox *audio_ = nullptr;
 	QCheckBox *withStream_ = nullptr;
 	QCheckBox *recordScene_ = nullptr;
 	QPushButton *record_ = nullptr;
+	QLabel *recording_ = nullptr; // the red "Recording · 00:04:32" line
 	QLabel *status_ = nullptr;
 	QTimer *timer_ = nullptr;
 	std::vector<obs_source_t *> held_; // strong refs backing the listed raw pointers

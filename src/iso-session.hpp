@@ -18,6 +18,9 @@ namespace iso {
 // own encode leaves room for three.
 constexpr size_t kEncoderWarnThreshold = 3;
 
+// What a source's row says at a glance, so the list is readable without hovering.
+enum class RowState { Idle, WillRecord, Recording, Failed };
+
 struct SessionConfig {
 	std::string basePath;
 	std::string videoEncoderId;
@@ -37,12 +40,15 @@ public:
 	bool preflight(const SessionConfig &cfg, std::string *why);
 	bool start(const SessionConfig &cfg, std::string *error);
 	void stop();
-	void refreshManifest();
+	// Returns the newest failure message when a recorder died since the last call,
+	// empty otherwise; the dock puts it on screen.
+	std::string refreshManifest();
 	bool arm(obs_source_t *source, std::string *error);
 	void disarm(obs_source_t *source);
 	void onSourceRemoved(obs_source_t *source);
 	void onSceneChanged(obs_source_t *scene);
 	uint64_t epochNs() const { return epochNs_; }
+	double elapsedSeconds() const;
 	const std::string &folder() const { return folder_; }
 	std::vector<Recording> recordings() const;
 
@@ -50,6 +56,7 @@ public:
 	bool isArmedAny() const { return !entries_.empty(); }
 	size_t armedVisualCount() const;
 	std::string statusFor(obs_source_t *source) const;
+	RowState rowStateFor(obs_source_t *source) const;
 	void setConfig(const SessionConfig &cfg);
 	const SessionConfig &config() const { return config_; }
 

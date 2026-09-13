@@ -138,6 +138,25 @@ std::string IsoSession::statusFor(obs_source_t *source) const
 	return "";
 }
 
+RowState IsoSession::rowStateFor(obs_source_t *source) const
+{
+	const Entry *e = find(source);
+	if (e && e->recorder)
+		return e->recorder->failed() ? RowState::Failed : RowState::Recording;
+	if (e)
+		return RowState::WillRecord;
+	const std::string name = obs_source_get_name(source);
+	for (auto it = finished_.rbegin(); it != finished_.rend(); ++it)
+		if (it->status == Status::Failed && it->source == name)
+			return RowState::Failed;
+	return RowState::Idle;
+}
+
+double IsoSession::elapsedSeconds() const
+{
+	return active_ ? (double)(os_gettime_ns() - epochNs_) / 1e9 : 0.0;
+}
+
 static uint64_t freeBytes(const std::string &path)
 {
 	const int64_t free = os_get_free_space(path.c_str());
@@ -394,20 +413,28 @@ void IsoSession::stop()
 
 std::vector<Recording> IsoSession::recordings() const { return finished_; }
 
-void IsoSession::refreshManifest()
+std::string IsoSession::refreshManifest()
 {
 	if (!active_)
-		return;
+		return {};
 	size_t failed = 0;
-	for (const auto &e : entries_)
-		if (e.recorder && e.recorder->failed())
+	std::string message;
+	for (const auto &e : entries_) {
+		if (e.recorder && e.recorder->failed()) {
 			++failed;
-	if (composite_ && composite_->failed())
+			message = (e.label.empty() ? e.name : e.label) + ": " + e.recorder->error();
+		}
+	}
+	if (composite_ && composite_->failed()) {
 		++failed;
+		message = std::string("the live scene: ") + composite_->error();
+	}
 	if (failed > failedSeen_) {
 		rewriteManifest();
 		failedSeen_ = failed;
+		return message;
 	}
+	return {};
 }
 
 void IsoSession::onSourceRemoved(obs_source_t *source) { disarm(source); }
