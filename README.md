@@ -78,14 +78,21 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   by default) adds a reference recording of the program, written as `00_Session.mov`.
 - **Session** holds the output folder (with Browse…) and the video encoder — "Same as
   the stream" by default. Audio is always saved as 24-bit WAV.
+- **New game** (blue) splits the session into game folders without stopping it. Each
+  press closes every running file and opens the next folder — `01_Game`, `02_Game`,
+  and so on — restarting the same ticked sources inside it. The clock does **not**
+  reset, so files in a later folder are simply later on the timeline and everything
+  still lines up. Press it as many times as you like.
+- **Where files land** — one folder per session under the base path, named by start
   time. The default is a folder of its own in your videos folder, e.g.
   `~/Movies/ISO Recorder/2026-09-12 14-32-05/` on macOS or
-  `C:\Users\you\Videos\ISO Recorder\2026-09-12 14-32-05\` on Windows. Video and audio
-  are numbered independently in dock order as `NN_<source>.<ext>`, so `01_game.mov` and
-  `01_game.wav` can both exist. Arming a source a second time writes `_2` rather
-  than reopening the first file. `session.json` and `README.txt` describe the
-  folder and list every file's exact start time.
-- **Encoder warning** — arming more visual sources than the machine is expected to
+  `C:\Users\you\Videos\ISO Recorder\2026-09-12 14-32-05\` on Windows. Inside it sits a
+  folder per game (`01_Game/`, `02_Game/`, …) holding the files for that game. Video
+  and audio are numbered independently in dock order as `NN_<source>.<ext>`, so
+  `01_game.mov` and `01_game.wav` can both exist. Ticking a source a second time
+  writes `_2` rather than reopening the first file. `session.json` and `README.txt`
+  live in the session folder and list every file's exact start time.
+- **Encoder warning** — ticking more visual sources than the machine is expected to
   keep up with shows a confirmation, but does not refuse; you may know better. See
   [Measurements](#measurements) for how that ceiling is being measured.
 
@@ -99,7 +106,7 @@ Run this on both platforms with a running OBS:
 4. all sources at once → all files
 5. tick a source after the session has started → its file starts then, `startOffset` is non-zero, and
    it still lines up in Resolve
-6. disarm and re-arm one source in a session → two files, both entries in the manifest
+6. untick and re-tick one source in a session → two files, both entries in the manifest
 7. add a source to the collection mid-session → it appears in the dock and can be ticked
 8. scene switch mid-record → every armed source keeps recording
 9. source deleted mid-record → recorder stops, marked `aborted`, others continue
@@ -109,6 +116,8 @@ Run this on both platforms with a running OBS:
 13. **sync:** a visible flash and an audible clap at the start; files armed at the start line up at
     zero in DaVinci Resolve, a later file sits at its listed offset, and `startOffset` matches
 14. **handoff:** the whole folder imports into Resolve; the editor confirms the stems are useful
+15. **new game:** press it mid-record → a `02_Game/` folder appears, its files start again at
+    `01_`, and each one still carries its true offset from the session clock
 15. forced quit mid-record → the `.mov` files still play; WAV is checked (see Further Notes)
 
 ## Measurements

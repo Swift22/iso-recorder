@@ -165,6 +165,8 @@ std::string buildSessionJson(const SessionInfo &info, const std::vector<Recordin
 		jsonString(o, kindName(r.kind));
 		o += ", \"file\": ";
 		jsonStr(o, r.file);
+		o += ", \"folder\": ";
+		jsonStr(o, r.folder);
 		o += ", \"codec\": ";
 		jsonStr(o, r.codec);
 		o += ", \"startOffset\": ";
@@ -184,6 +186,15 @@ std::string buildSessionJson(const SessionInfo &info, const std::vector<Recordin
 	return o;
 }
 
+// How a recording is shown in the README: the game folder and the file, or a dash
+// when nothing was written.
+static std::string readmePath(const Recording &r)
+{
+	if (r.file.empty())
+		return "--";
+	return r.folder.empty() ? r.file : r.folder + "/" + r.file;
+}
+
 std::string buildReadme(const SessionInfo &info, const std::vector<Recording> &recs)
 {
 	std::string o;
@@ -194,12 +205,12 @@ std::string buildReadme(const SessionInfo &info, const std::vector<Recording> &r
 	o += "and they all line up.\n\n";
 	size_t fileWidth = 18;
 	for (const Recording &r : recs) {
-		const size_t len = (r.file.empty() ? 2 : r.file.size()) + 2;
+		const size_t len = readmePath(r).size() + 2;
 		if (len > fileWidth)
 			fileWidth = len;
 	}
 	for (const Recording &r : recs) {
-		const std::string file = r.file.empty() ? "--" : r.file;
+		const std::string file = readmePath(r);
 		const std::string clock = r.startOffset ? formatClock(*r.startOffset) : "--";
 		std::string desc = r.label.empty() ? r.source : r.label;
 		if (r.status == Status::Failed)

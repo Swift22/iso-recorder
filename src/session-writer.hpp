@@ -19,6 +19,9 @@ struct Recording {
 	Status status = Status::Recording;
 	std::string error;
 	std::string label;
+	// The game folder this file lives in ("01_Game"), or empty for a session that
+	// was never split. The file itself is always relative to this folder.
+	std::string folder;
 };
 
 struct VideoFormat {

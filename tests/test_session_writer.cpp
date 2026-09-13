@@ -86,9 +86,11 @@ int main()
 		"  },\n"
 		"  \"recordings\": [\n"
 		"    { \"source\": \"game\", \"kind\": \"video\", \"file\": "
-		"\"01_game.mov\", \"codec\": \"h264\", \"startOffset\": 0.0, "
+		"\"01_game.mov\", \"folder\": null, \"codec\": \"h264\", "
+		"\"startOffset\": 0.0, "
 		"\"duration\": 8123.4, \"status\": \"complete\" },\n"
 		"    { \"source\": \"ofes\", \"kind\": \"video\", \"file\": null, "
+		"\"folder\": null, "
 		"\"codec\": null, \"startOffset\": null, \"duration\": null, "
 		"\"status\": \"failed\", \"error\": \"encoder refused: too many sessions\" }\n"
 		"  ]\n"
@@ -108,6 +110,15 @@ int main()
 		longRecs[0].file = "01_Desktop_Audio.wav";
 		const std::string longReadme = buildReadme(info, longRecs);
 		CHECK(longReadme.find("01_Desktop_Audio.wav  0:00.0") != std::string::npos);
+	}
+
+	{
+		std::vector<Recording> splitRecs = recs;
+		splitRecs[0].folder = "02_Game";
+		const std::string splitJson = buildSessionJson(info, splitRecs);
+		CHECK(splitJson.find("\"folder\": \"02_Game\"") != std::string::npos);
+		const std::string splitReadme = buildReadme(info, splitRecs);
+		CHECK(splitReadme.find("02_Game/01_game.mov") != std::string::npos);
 	}
 
 	if (failures == 0)

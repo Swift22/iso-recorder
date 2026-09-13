@@ -32,15 +32,24 @@ USE
   Tick "Also record the live scene" if you also want one reference file
   of the program exactly as viewers saw it.
 
+  Playing more than one game? Press the blue "New game" button between
+  them. It carries on recording without a break, but starts a new folder
+  for what comes next. Press it as often as you like.
+
 
 WHERE THE FILES GO
   One folder per session, under the folder shown in "Save to":
 
     Videos/ISO Recorder/2026-09-13 21-04-18/
-        01_Game.mov
-        02_Character.mov
-        01_Game.wav
-        02_Microphone.wav
+        01_Game/
+            01_Game.mov
+            02_Character.mov
+            01_Game.wav
+            02_Microphone.wav
+        02_Game/          after you press "New game"
+            01_Game.mov
+            02_Character.mov
+        03_Game/          and so on, as many as you need
         session.json      the exact start time of every file
         README.txt        a plain note for whoever edits it
 

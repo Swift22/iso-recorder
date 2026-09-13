@@ -226,6 +226,13 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	recordScene_ = new QCheckBox(tr("Also record the live scene"), this);
 
 	record_ = new QPushButton(tr("Record"), this);
+	newGame_ = new QPushButton(tr("New game"), this);
+	newGame_->setStyleSheet(QStringLiteral(
+		"QPushButton { background-color: #1d6fd0; color: white; border: 1px solid #1657a5;"
+		" border-radius: 3px; padding: 4px 10px; }"
+		"QPushButton:disabled { background-color: #b9c6d4; color: #f4f4f4;"
+		" border-color: #a8b6c4; }"));
+	newGame_->setToolTip(tr("Start a new game folder inside this session."));
 	recording_ = new QLabel(this);
 	recording_->setStyleSheet(QStringLiteral("color: #c0392b; font-weight: bold;"));
 	recording_->hide();
@@ -249,6 +256,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	layout->addWidget(withStream_);
 	layout->addWidget(recordScene_);
 	layout->addWidget(record_);
+	layout->addWidget(newGame_);
 	layout->addWidget(recording_);
 	layout->addWidget(status_);
 
@@ -260,6 +268,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	QTimer::singleShot(0, this, [this] { session_->setConfig(sessionConfigFromWidgets()); });
 
 	connect(record_, &QPushButton::clicked, this, &IsoDock::onRecordClicked);
+	connect(newGame_, &QPushButton::clicked, this, &IsoDock::onNewGameClicked);
 	connect(picture_, &QListWidget::itemChanged, this, &IsoDock::onItemChanged);
 	connect(sound_, &QListWidget::itemChanged, this, &IsoDock::onItemChanged);
 	connect(browse_, &QPushButton::clicked, this, &IsoDock::onBrowse);
@@ -401,6 +410,7 @@ void IsoDock::refreshSources()
 	} else {
 		recording_->hide();
 	}
+	newGame_->setEnabled(active);
 	if (!active && !armed) {
 		record_->setEnabled(false);
 		record_->setToolTip(tr("Tick at least one source to record."));
@@ -410,6 +420,18 @@ void IsoDock::refreshSources()
 		record_->setEnabled(true);
 		record_->setToolTip(QString());
 	}
+}
+
+void IsoDock::onNewGameClicked()
+{
+	std::string error;
+	if (!session_->newGame(&error)) {
+		if (!error.empty())
+			setStatus(tr("Could not start a new game: ") + QString::fromStdString(error));
+		return;
+	}
+	setStatus(tr("Started ") + QString::fromStdString(session_->gameFolder()) + ".");
+	refreshSources();
 }
 
 void IsoDock::onItemChanged(QListWidgetItem *item)

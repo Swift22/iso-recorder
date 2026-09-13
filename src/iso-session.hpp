@@ -40,6 +40,9 @@ public:
 	bool preflight(const SessionConfig &cfg, std::string *why);
 	bool start(const SessionConfig &cfg, std::string *error);
 	void stop();
+	// Close every running file and start a fresh numbered game folder, keeping the
+	// session and its clock. Returns false when no session is running.
+	bool newGame(std::string *error);
 	// Returns the newest failure message when a recorder died since the last call,
 	// empty otherwise; the dock puts it on screen.
 	std::string refreshManifest();
@@ -50,6 +53,7 @@ public:
 	uint64_t epochNs() const { return epochNs_; }
 	double elapsedSeconds() const;
 	const std::string &folder() const { return folder_; }
+	const std::string &gameFolder() const { return gameFolder_; }
 	std::vector<Recording> recordings() const;
 
 	bool isArmed(obs_source_t *source) const;
@@ -73,11 +77,17 @@ private:
 	Entry *find(obs_source_t *source);
 	const Entry *find(obs_source_t *source) const;
 	bool startEntry(Entry &e, std::string *error, bool atSessionStart);
+	void closeEntry(Entry &e, Status okStatus);
+	bool startComposite(std::string *error, bool atSessionStart);
+	void closeComposite();
+	std::string segmentDir() const;
 	double offsetFor(Kind kind, uint64_t offsetNs) const;
 	void rewriteManifest();
 
 	bool active_ = false;
 	std::string folder_;
+	std::string gameFolder_; // "01_Game", "02_Game", ... inside folder_
+	int gameNumber_ = 1;
 	uint64_t epochNs_ = 0;
 	size_t failedSeen_ = 0;
 	std::vector<Entry> entries_;

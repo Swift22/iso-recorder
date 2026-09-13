@@ -32,6 +32,7 @@ signals:
 
 private slots:
 	void onRecordClicked();
+	void onNewGameClicked();
 	void onItemChanged(QListWidgetItem *item);
 	void onBrowse();
 	void onTick();
@@ -54,6 +55,7 @@ private:
 	QCheckBox *withStream_ = nullptr;
 	QCheckBox *recordScene_ = nullptr;
 	QPushButton *record_ = nullptr;
+	QPushButton *newGame_ = nullptr;
 	QLabel *recording_ = nullptr; // the red "Recording · 00:04:32" line
 	QLabel *status_ = nullptr;
 	QTimer *timer_ = nullptr;
