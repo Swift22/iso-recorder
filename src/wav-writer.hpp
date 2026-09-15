@@ -9,7 +9,7 @@
 namespace iso {
 
 std::vector<uint8_t> buildWavHeader(uint32_t dataBytes, uint32_t sampleRate, uint16_t channels,
-				    uint16_t bitsPerSample);
+				    uint16_t bitsPerSample, bool streaming = false);
 
 class WavWriter {
 public:

@@ -15,7 +15,8 @@ namespace iso {
 class SourceRecorder {
 public:
 	SourceRecorder(obs_source_t *source, std::string name, std::string path,
-		       std::string videoEncoderId, obs_data_t *videoSettings, Kind kind,
+		       std::string videoEncoderId, obs_data_t *videoSettings,
+		       obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight, Kind kind,
 		       std::string audioCodec);
 	~SourceRecorder();
 
@@ -31,6 +32,8 @@ public:
 	const std::string &codec() const { return codec_; }
 	uint64_t startOffsetNs() const { return startOffsetNs_; }
 	double durationSeconds() const;
+	// Video packets the output actually delivered; final once stop() has run.
+	uint32_t totalFrames() const { return totalFrames_; }
 
 	void noteStart(uint64_t epochNs, bool atSessionStart = false);
 
@@ -59,11 +62,15 @@ private:
 	bool hasAudio_ = false;
 	std::string videoEncoderId_;
 	obs_data_t *videoSettings_ = nullptr; // owned copy
+	obs_data_t *audioSettings_ = nullptr; // owned copy
+	uint32_t capWidth_ = 0;               // recording-size cap; 0 means the source's own size
+	uint32_t capHeight_ = 0;
 	std::string audioCodec_;
 
 	obs_view_t *view_ = nullptr;
 	video_t *video_ = nullptr;
 	audio_t *audio_ = nullptr;
+	obs_source_t *background_ = nullptr; // strong ref, released in stop()
 	WavWriter wav_;
 	obs_encoder_t *videoEnc_ = nullptr;
 	obs_encoder_t *audioEnc_ = nullptr;
@@ -75,9 +82,11 @@ private:
 	uint64_t stopNs_ = 0;
 	uint64_t epochNs_ = 0;
 	uint64_t startOffsetNs_ = 0;
+	uint32_t totalFrames_ = 0;
 	bool started_ = false;
 	bool failed_ = false;
 	bool showingInced_ = false;
+	bool bgShowingInced_ = false;
 	std::string error_;
 };
 

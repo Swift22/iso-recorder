@@ -1,0 +1,22 @@
+{
+    "name": "iso-recorder",
+    "displayName": "ISO Recorder",
+    "version": "0.4.0",
+    "author": "Swift22",
+    "website": "https://github.com/Swift22/iso-recorder",
+    "email": "swift22@users.noreply.github.com",
+    "description": "Records one file per source while you stream, independent of the composite program output.",
+    "bugs": "https://github.com/Swift22/iso-recorder/issues",
+    "platformConfig": {
+        "macos": {
+            "bundleId": "io.github.swift22.iso-recorder"
+        }
+    },
+    "dependencies": {
+        "obs-studio": {
+            "version": "32.2.2",
+            "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
+            "label": "OBS sources"
+        }
+    }
+}

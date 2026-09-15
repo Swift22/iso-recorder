@@ -19,13 +19,17 @@ namespace iso {
 constexpr size_t kEncoderWarnThreshold = 3;
 
 // What a source's row says at a glance, so the list is readable without hovering.
-enum class RowState { Idle, WillRecord, Recording, Failed };
+enum class RowState { Idle, WillRecord, Recording, Failed, Aborted };
 
 struct SessionConfig {
 	std::string basePath;
 	std::string videoEncoderId;
-	obs_data_t *videoSettings = nullptr;            // borrowed for the call
+	obs_data_t *videoSettings = nullptr; // borrowed; the dock owns the copy it hands over
+	obs_data_t *audioSettings = nullptr; // borrowed; the dock owns the copy it hands over
 	std::string audioCodec = "pcm_s24le";
+	std::string videoSize = "stream"; // "stream", "source", or a height: "2160".."480"
+	uint32_t capWidth = 0;            // resolved from videoSize once per session; 0 means no cap
+	uint32_t capHeight = 0;
 	uint64_t bitrateBitsPerSec = 6000ull * 1000ull; // drives the disk check in Task 9
 	bool recordComposite = false;
 	bool withStream = true;
@@ -100,10 +104,12 @@ private:
 	std::map<Kind, int> nextIndex_{{Kind::Video, 1}, {Kind::Audio, 1}};
 	std::string videoEncoderId_ = "obs_x264";
 	obs_data_t *videoSettings_ = nullptr; // owned by the session (strong ref)
+	obs_data_t *audioSettings_ = nullptr; // owned by the session (strong ref)
 	std::string audioCodec_ = "pcm_s24le";
 	SessionConfig config_;
 	SessionInfo info_;
 	bool globalAudioHeld_ = false;
+	bool stopping_ = false;
 };
 
 } // namespace iso

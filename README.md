@@ -67,7 +67,9 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
 - **Picture / Sound** — every source in the collection, listed under Picture when it
   has a picture and under Sound when it is audio-only. Each row has a checkbox and
   shows what it is doing: a red `●` while it is writing a file, `not recorded` if it
-  stopped early, nothing while it is idle. Hover a row for its size and file name.
+  failed, `incomplete` if it finished but came out short of frames, nothing while it is
+  idle. Hover a row for its size, its file name, and the reason when something went
+  wrong.
 - **Tick a source to record it live.** With a session running, ticking starts that
   source's file immediately; unticking ends and finalizes it. With no session
   running, the tick is remembered and applies the moment one starts. A source added
@@ -83,11 +85,15 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   stop with the stream** (on by default) does the same from the stream's own start
   and stop, so you never forget to press record. **Also record the live scene** (off
   by default) adds a reference recording of the program, written as `00_Session.mov`.
-- **Session** holds the output folder (with Browse…) and the video encoder — "Same as
-  the stream" by default. Audio is always saved as 24-bit WAV. A hardware encoder can
-  refuse a source it cannot handle (most often a picture smaller than its minimum frame
-  size, such as a small avatar or overlay). That source falls back to `obs_x264` on its
-  own rather than failing — the log says so when it happens.
+- **Session** holds the output folder (with Browse…), the video encoder — "Same as the
+  stream" by default — and **Recording size**, also "Same as the stream" by default.
+  Recording size only ever scales a file down: pick 1080p and a source bigger than that is
+  recorded at that height, keeping its shape, while one already smaller is left alone. It
+  shrinks what is converted and encoded, not what each recording renders, so it buys back
+  encoder work rather than render work. Audio is always saved as 24-bit WAV. A hardware
+  encoder can refuse a source it cannot handle (most often a picture smaller than its
+  minimum frame size, such as a small avatar or overlay). That source falls back to
+  `obs_x264` on its own rather than failing — the log says so when it happens.
 - **New game** (blue) splits the session into game folders without stopping it. Each
   press closes every running file and opens the next folder — `01_Game`, `02_Game`,
   and so on — restarting the same ticked sources inside it. The clock does **not**
@@ -105,6 +111,30 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
 - **Encoder warning** — ticking more visual sources than the machine is expected to
   keep up with shows a confirmation, but does not refuse; you may know better. See
   [Measurements](#measurements) for how that ceiling is being measured.
+
+## Transparency and the green background
+
+Every file is recorded per source, before the sources are composited. An OBS view has no
+way to clear itself to transparent, so anything genuinely see-through in a source — a
+VTuber avatar with no background, a logo with alpha — has nothing behind it, and would
+otherwise record as black.
+
+Instead the plugin puts a plain green panel behind every picture it records, so those
+see-through areas come out as solid chroma green and can be keyed out in your editor the
+same way a green screen is. It is always on and has no setting; a source that fills its
+whole frame is unaffected either way.
+
+Two things follow.
+
+- **The green is not perfect green.** Video is encoded at 4:2:0, where colour is kept at
+  half resolution, so a partly see-through pixel picks up a soft green fringe. Keying with
+  a little tolerance removes it.
+- **A Spout source can cover it.** Spout sources carry their own **Composite mode**. When
+  it is *Opaque*, the source arrives with no transparency at all, so its background covers
+  the green panel and records as black. The plugin does not change another plugin's
+  settings. It warns — in the log and in the dock — and names the fix: set that source's
+  Composite mode to **Premultiplied Alpha**. veadotube mini and VTube Studio both expose
+  it.
 
 ## Manual checklist
 
@@ -132,9 +162,9 @@ Run this on both platforms with a running OBS:
 
 ## Measurements
 
-The encoder ceiling has been measured on the Windows box. Sync drift over a long
-session was attempted and is still not conclusive, so that one value remains an
-assumption rather than a result.
+The encoder ceiling has been measured on the Windows box, and so has the alignment of
+the two streams inside a recording. What remains unmeasured is an independent audio
+clock — a microphone alongside a picture — over a full three-hour session.
 
 ### Sync drift over a long session
 
@@ -148,40 +178,48 @@ for the whole run. If the two clocks drift, the fix is a shared clock or periodi
 resync, and it changes the design.
 
 **Not yet settled.** The build writes each file's start offset from one session epoch
-(`session.json`, `README.txt`) and assumes the clock holds for the whole session. That
-is still an assumption.
+(`session.json`, `README.txt`) and assumes the clock holds for the whole session.
 
-**A 30-minute run was made and it is not conclusive.** The test media carried a
-full-frame flash and a 1 kHz beep on the same 60-second boundary, so the gap between the
-two measures audio-against-video skew inside one file. Measured through the plugin, that
-gap grew from about 30 ms after the first minute to about 300 ms after the last —
-roughly 10 ms per minute, which would be about 1.8 s across a three-hour stream.
+**A 30-minute run says the recorder holds.** These files carry their index at the end, so
+the finished `.mov` can be read without decoding it. In the 30-minute run's
+`DriftMedia.mov`:
 
-The number cannot be trusted yet, because the flash and the beep come from the same
-media file and are therefore locked together on disk — the source's own beep-to-flash
-gap stays at 10 ms from the first minute to the last. Anything that grows between them
-in a recording is playback timing, not content.
+- video — h264, **107,775 frames** at 60 fps: **1796.2500 s**, starting at 0
+- audio — AAC, **84,199 packets** at 48 kHz: **1796.2240 s**, starting at 0
 
-The plugin stamps a video frame when it is rendered and carries the source's own
-timestamp for audio, so a source whose playback runs late shows up as exactly this kind
-of growing gap. This media source was late by about 1.5 s over the 28 minutes, which is
-what makes it a poor ruler. A live source — a game, a screen, a microphone — has no
-playback clock to fall behind, which is why the real measurement has to be made with
-those.
+They end **26 ms apart** after 1796.25 s, and 107,775 ÷ 60 = 1796.25 exactly, so the
+video stream is frame-exact and the difference is inside a single AAC packet (1024
+samples, 21.3 ms). The two timelines did not separate. Encoding lag on that run was 3
+frames per file, 0.0%.
 
-The container itself came back clean — video 107,972 frames and audio 84,353 AAC frames,
-both 1799.53 s, both starting at zero — so nothing was dropped or truncated, and the
-two files of that run differed in length by only 78 ms (video 1800.0025 s, audio
-1800.0805 s).
+**The earlier ~10 ms/min figure was the ruler, not the recorder.** That run's test media
+carried a full-frame flash and a 1 kHz beep on the same 60-second boundary, so the gap
+between them measured audio-against-video skew inside one file; through the plugin it
+grew from about 30 ms after the first minute to about 300 ms after the last. The flash
+and the beep come from the same media file and are locked together on disk — the source's
+own beep-to-flash gap stayed at 10 ms from the first minute to the last — so what grew
+was the source's **playback** clock falling behind: that media source ran about 1.5 s
+late over 28 minutes. The plugin stamps a video frame when it is rendered and carries the
+source's own timestamp for audio, so a source whose playback runs late shows up as
+exactly that kind of growing gap. It was a poor ruler.
 
-**What is still owed.** Repeat it with real sources — a game or window capture for
-picture and a microphone for sound, three hours, on the machine that actually streams.
-Until then treat per-file audio-against-video alignment as unproven.
+**What is still owed.** That media file's audio and video come from one playback clock,
+so this measures the plugin's two timelines rather than two independent clocks — and the
+collection had no audio-only source to arm. The remaining run is a **microphone** against
+a game or screen capture, three hours, on the machine that actually streams. Until then
+treat independent-clock alignment as unproven.
 
 ### Simultaneous 1080p60 hardware encodes
 
 Each visual source is its own encode, so N armed visuals cost N hardware encodes at
-once, alongside the stream.
+once, alongside the stream. Each encode also takes its own NVENC session — one per
+armed source, plus one for the stream — and OBS never pools or shares them, so nothing
+here runs you out of sessions.
+
+The artificial session cap NVIDIA puts on consumer GeForce cards is now high enough
+that it is no longer what stops you at this scale, and pro cards have no cap at all.
+What does stop you is the GPU's encode throughput, which is what the numbers below
+measure. (OBS 32.2.2 bundles NVIDIA's SDK 13, so it needs driver 570 or newer.)
 
 **How to measure.** On the Mac and on the Windows box, with a normal stream running,
 arm one 1080p60 visual source at a time and check for dropped frames, until the machine
@@ -196,14 +234,31 @@ N 1080p60 sources at once with the stream idle:
 | 6 | five clean; one lost about a third of its frames |
 | 8 | every file lost about half its frames |
 
-The loss is silent. `session.json` still says `complete` for every file and each file's
-own frame rate still reads 60 — it is the file that comes out short, not its rate. So a
-machine that has quietly stopped keeping up looks exactly like one that is fine.
+A file that comes out short used to be silent: `session.json` said `complete` for every
+file, and each file's own frame rate still read 60, so a machine that had quietly stopped
+keeping up looked exactly like one that was fine. That is now caught. When a recording
+ends, the frames the encoder actually delivered are compared against what the recording's
+own length should have produced; a gap of more than about 2% marks that file `aborted`
+instead of `complete`, and the dock, `session.json` and the session's `README.txt` all say
+in plain words roughly how many frames went missing.
+
+**Measured again on the fixed build** — three armed sources plus the stream, 1080p60, over
+139 s: every ISO output ran at `0.0–0.1%` encoding lag, the same as the stream, and wrote
+6.0 Mbps, exactly the bitrate the stream encoder was set to. The graphics thread spent a
+median of **1.742 ms** of its 16.667 ms budget and the GPU encode thread **0.971 ms**;
+handing frames to the encoders (`output_gpu_encoders`) cost **0.08 ms**. Copying the
+drawing into a source's own view (`render_main_texture`) is **0.018 ms** a piece, so the
+three of them together cost about 0.05 ms — which is why the per-source render pass is
+left alone rather than optimised.
 
 **The threshold is 3** (`kEncoderWarnThreshold` in `src/iso-session.hpp`) — one below the
 four this box sustained, because the stream's own encode shares the same hardware and the
 measurement was taken with it idle. Tick more visual sources than that and the dock warns
 and asks to confirm; it never refuses, because the operator may know better.
+
+NVIDIA's split-frame encoding is not an escape hatch: OBS only offers it for HEVC and
+AV1, and only on a GPU with more than one NVENC engine. This plugin records H.264, and
+the tested laptop has a single engine.
 
 ## Contributing
 

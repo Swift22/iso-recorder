@@ -121,9 +121,9 @@ static void fillEncoders(QComboBox *box)
 		   realEncoderId("apple_hevc") == "obs_x264" ? std::string() : std::string("apple_hevc"));
 #else
 	addEncoder(box, "NVIDIA (NVENC)",
-		   firstRegisteredEncoder({"jim_nvenc", "obs_nvenc_h264_tex", "ffmpeg_nvenc"}));
+		   firstRegisteredEncoder({"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc"}));
 	addEncoder(box, "NVIDIA (NVENC) HEVC",
-		   firstRegisteredEncoder({"jim_hevc_nvenc", "obs_nvenc_hevc_tex"}));
+		   firstRegisteredEncoder({"obs_nvenc_hevc_tex", "jim_hevc_nvenc"}));
 	addEncoder(box, "Intel (Quick Sync)",
 		   firstRegisteredEncoder({"obs_qsv11_v2", "obs_qsv11"}));
 	addEncoder(box, "Intel (Quick Sync) HEVC", firstRegisteredEncoder({"obs_qsv11_hevc"}));
@@ -133,65 +133,66 @@ static void fillEncoders(QComboBox *box)
 		addEncoder(box, "CPU (x264)", "obs_x264");
 }
 
-static std::string streamingEncoderId()
-{
-	obs_output_t *output = obs_frontend_get_streaming_output();
-	if (!output)
-		return {};
-	obs_encoder_t *encoder = obs_output_get_video_encoder(output);
-	const char *id = encoder ? obs_encoder_get_id(encoder) : nullptr;
-	std::string result = id ? id : "";
-	obs_output_release(output);
-	return result;
-}
-
 static std::string platformDefaultEncoderId()
 {
 #ifdef __APPLE__
 	return realEncoderId("apple_h264") == "obs_x264" ? std::string("obs_x264") : std::string("apple_h264");
 #else
+	// Texture encoders take frames straight off the GPU. The legacy wrappers have to
+	// pull every frame back to the CPU first, which costs far more and is the reason
+	// they are deprecated, so they are only a last resort.
 	const std::string hw = firstRegisteredEncoder(
-		{"jim_nvenc", "obs_nvenc_h264_tex", "ffmpeg_nvenc", "obs_qsv11_v2", "obs_qsv11",
-		 "h264_texture_amf", "h264_amf"});
+		{"obs_nvenc_h264_tex", "obs_qsv11_v2", "h264_texture_amf", "h264_amf", "jim_nvenc",
+		 "ffmpeg_nvenc", "obs_qsv11"});
 	return hw.empty() ? std::string("obs_x264") : hw;
 #endif
 }
 
-static uint64_t streamingBitrateBitsPerSec()
+static bool spoutCompositeUnset(obs_source_t *source)
 {
-	obs_output_t *output = obs_frontend_get_streaming_output();
-	if (!output)
-		return 0;
-	uint64_t bitrate = 0;
-	obs_encoder_t *encoder = obs_output_get_video_encoder(output);
-	if (encoder) {
-		obs_data_t *settings = obs_encoder_get_settings(encoder);
-		if (settings) {
-			const int64_t kbps = obs_data_get_int(settings, "bitrate");
-			if (kbps > 0)
-				bitrate = (uint64_t)kbps * 1000ull;
-			obs_data_release(settings);
-		}
-	}
-	obs_output_release(output);
-	return bitrate;
+	const char *id = obs_source_get_id(source);
+	if (!id || strcmp(id, "spout_capture") != 0)
+		return false;
+	obs_data_t *settings = obs_source_get_settings(source);
+	if (!settings)
+		return true;
+	const bool bad = !obs_data_has_user_value(settings, "compositemode") ||
+			 obs_data_get_int(settings, "compositemode") == 1;
+	obs_data_release(settings);
+	return bad;
 }
 
-static SessionConfig resolvedConfig(SessionConfig cfg)
+static void capForName(const std::string &size, uint32_t *width, uint32_t *height)
 {
-	if (cfg.videoEncoderId.empty()) {
-		const std::string stream = streamingEncoderId();
-		cfg.videoEncoderId = (!stream.empty() && muxableEncoderId(stream))
-					     ? stream
-					     : platformDefaultEncoderId();
+	*width = 0;
+	*height = 0;
+	if (size == "2160") {
+		*width = 3840;
+		*height = 2160;
+	} else if (size == "1440") {
+		*width = 2560;
+		*height = 1440;
+	} else if (size == "1080") {
+		*width = 1920;
+		*height = 1080;
+	} else if (size == "720") {
+		*width = 1280;
+		*height = 720;
+	} else if (size == "480") {
+		*width = 854;
+		*height = 480;
 	}
-	cfg.videoEncoderId = realEncoderId(cfg.videoEncoderId);
-	if (!encoderRegistered(cfg.videoEncoderId) || !muxableEncoderId(cfg.videoEncoderId))
-		cfg.videoEncoderId = "obs_x264";
-	const uint64_t bitrate = streamingBitrateBitsPerSec();
-	if (bitrate > 0)
-		cfg.bitrateBitsPerSec = bitrate;
-	return cfg;
+}
+
+static void fillSizes(QComboBox *box)
+{
+	box->addItem(QObject::tr("Same as the stream"), QString("stream"));
+	box->addItem(QObject::tr("Original size"), QString("source"));
+	box->addItem(QStringLiteral("2160p"), QString("2160"));
+	box->addItem(QStringLiteral("1440p"), QString("1440"));
+	box->addItem(QStringLiteral("1080p"), QString("1080"));
+	box->addItem(QStringLiteral("720p"), QString("720"));
+	box->addItem(QStringLiteral("480p"), QString("480"));
 }
 
 static QString formatElapsed(double seconds)
@@ -222,6 +223,8 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 
 	encoder_ = new QComboBox(this);
 	fillEncoders(encoder_);
+	size_ = new QComboBox(this);
+	fillSizes(size_);
 	withStream_ = new QCheckBox(tr("Start and stop with the stream"), this);
 	withStream_->setChecked(true);
 	recordScene_ = new QCheckBox(tr("Also record the live scene"), this);
@@ -243,6 +246,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	status_->setWordWrap(true);
 
 	auto *encoderLabel = new QLabel(tr("Video encoder"), this);
+	auto *sizeLabel = new QLabel(tr("Recording size"), this);
 	auto *audioNote = new QLabel(tr("Audio is saved as 24-bit WAV."), this);
 	audioNote->setStyleSheet(QStringLiteral("color: #808080;"));
 
@@ -253,6 +257,8 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	layout->addLayout(pathRow);
 	layout->addWidget(encoderLabel);
 	layout->addWidget(encoder_);
+	layout->addWidget(sizeLabel);
+	layout->addWidget(size_);
 	layout->addWidget(audioNote);
 	layout->addWidget(withStream_);
 	layout->addWidget(recordScene_);
@@ -266,7 +272,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	// load OBS has not built its output handler yet, so querying it here dereferences null.
 	// Defer the seed to the event loop, which runs once OBS is fully up; this also covers a
 	// plugin (re)loaded after startup, when the handler already exists.
-	QTimer::singleShot(0, this, [this] { session_->setConfig(sessionConfigFromWidgets()); });
+	QTimer::singleShot(0, this, [this] { refreshSessionConfig(); });
 
 	connect(record_, &QPushButton::clicked, this, &IsoDock::onRecordClicked);
 	connect(newGame_, &QPushButton::clicked, this, &IsoDock::onNewGameClicked);
@@ -275,6 +281,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	connect(browse_, &QPushButton::clicked, this, &IsoDock::onBrowse);
 	connect(path_, &QLineEdit::textChanged, this, &IsoDock::onConfigChanged);
 	connect(encoder_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
+	connect(size_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(withStream_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 	connect(recordScene_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 
@@ -288,6 +295,12 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 IsoDock::~IsoDock()
 {
 	releaseHeld();
+	if (encoderSettings_)
+		obs_data_release(encoderSettings_);
+	if (audioSettings_)
+		obs_data_release(audioSettings_);
+	encoderSettings_ = nullptr;
+	audioSettings_ = nullptr;
 }
 
 void IsoDock::releaseHeld()
@@ -354,6 +367,10 @@ void IsoDock::applySourceState(QListWidgetItem *item, obs_source_t *source, Kind
 		item->setText(name + tr("  —  not recorded"));
 		item->setForeground(QColor(0xb7, 0x79, 0x1f));
 		break;
+	case RowState::Aborted:
+		item->setText(name + tr("  —  incomplete"));
+		item->setForeground(QColor(0xb7, 0x79, 0x1f));
+		break;
 	default:
 		item->setText(name);
 		item->setForeground(QBrush());
@@ -369,6 +386,11 @@ void IsoDock::applySourceState(QListWidgetItem *item, obs_source_t *source, Kind
 		if (!tip.isEmpty())
 			tip += "\n";
 		tip += QString::fromStdString(status);
+	}
+	if (kind == Kind::Video && spoutCompositeUnset(source)) {
+		if (!tip.isEmpty())
+			tip += "\n";
+		tip += tr("Set the Spout source's Composite mode to Premultiplied Alpha, or the background cannot show.");
 	}
 	item->setToolTip(tip);
 }
@@ -453,6 +475,7 @@ void IsoDock::refreshSources()
 	path_->setEnabled(!active);
 	browse_->setEnabled(!active);
 	encoder_->setEnabled(!active);
+	size_->setEnabled(!active);
 	withStream_->setEnabled(!active);
 	recordScene_->setEnabled(!active);
 	record_->setText(active ? tr("Stop recording") : tr("Record"));
@@ -532,8 +555,8 @@ void IsoDock::onRecordClicked()
 		session_->stop();
 		message = tr("Stopped.");
 	} else {
-		SessionConfig cfg = sessionConfigFromWidgets();
-		session_->setConfig(cfg);
+		refreshSessionConfig();
+		const SessionConfig &cfg = session_->config();
 		std::string why;
 		std::string err;
 		if (!session_->preflight(cfg, &why))
@@ -556,8 +579,27 @@ void IsoDock::onTick()
 	refreshSources();
 	const std::string failure = session_->refreshManifest();
 	transientStatus_ = false;
-	if (!failure.empty())
+	if (!failure.empty()) {
 		setStatus(tr("Source failed: ") + QString::fromStdString(failure));
+	} else {
+		for (int row = 0; row < picture_->count(); ++row) {
+			auto *source = reinterpret_cast<obs_source_t *>(
+				picture_->item(row)->data(Qt::UserRole).value<quintptr>());
+			if (!source || !session_->isArmed(source) || !spoutCompositeUnset(source))
+				continue;
+			const std::string name = obs_source_get_name(source);
+			if (std::find(spoutWarned_.begin(), spoutWarned_.end(), name) ==
+			    spoutWarned_.end()) {
+				spoutWarned_.push_back(name);
+				blog(LOG_WARNING,
+				     "[iso-recorder] %s: the Spout source is set to an opaque composite mode, so its transparent pixels record black instead of the green background",
+				     name.c_str());
+			}
+			setStatus(tr("%1: set the Spout source's Composite mode to Premultiplied Alpha, or the background cannot show.")
+					  .arg(QString::fromStdString(name)));
+			break;
+		}
+	}
 	if (dirty_) {
 		dirty_ = false;
 		saveConfig(configFromWidgets());
@@ -570,6 +612,24 @@ void IsoDock::setStatus(const QString &text)
 {
 	transientStatus_ = true;
 	status_->setText(text);
+}
+
+void IsoDock::refreshSessionConfig()
+{
+	obs_data_t *video = nullptr;
+	obs_data_t *audio = nullptr;
+	SessionConfig cfg = resolveConfig(configFromWidgets(), &video, &audio);
+	obs_data_t *oldVideo = encoderSettings_;
+	obs_data_t *oldAudio = audioSettings_;
+	encoderSettings_ = video;
+	audioSettings_ = audio;
+	cfg.videoSettings = encoderSettings_;
+	cfg.audioSettings = audioSettings_;
+	session_->setConfig(cfg);
+	if (oldVideo)
+		obs_data_release(oldVideo);
+	if (oldAudio)
+		obs_data_release(oldAudio);
 }
 
 void IsoDock::saveSettings()
@@ -585,7 +645,7 @@ void IsoDock::onConfigChanged()
 	if (updating_)
 		return;
 	dirty_ = true;
-	session_->setConfig(sessionConfigFromWidgets());
+	refreshSessionConfig();
 }
 
 void IsoDock::applyConfig(const SessionConfig &cfg)
@@ -595,6 +655,8 @@ void IsoDock::applyConfig(const SessionConfig &cfg)
 					    : QString::fromStdString(cfg.basePath));
 	const int encoderIndex = encoder_->findData(QString::fromStdString(cfg.videoEncoderId));
 	encoder_->setCurrentIndex(encoderIndex < 0 ? 0 : encoderIndex);
+	const int sizeIndex = size_->findData(QString::fromStdString(cfg.videoSize));
+	size_->setCurrentIndex(sizeIndex < 0 ? 0 : sizeIndex);
 	withStream_->setChecked(cfg.withStream);
 	recordScene_->setChecked(cfg.recordComposite);
 	updating_ = false;
@@ -605,14 +667,82 @@ SessionConfig IsoDock::configFromWidgets() const
 	SessionConfig cfg;
 	cfg.basePath = path_->text().toStdString();
 	cfg.videoEncoderId = encoder_->currentData().toString().toStdString();
+	cfg.videoSize = size_->currentData().toString().toStdString();
 	cfg.withStream = withStream_->isChecked();
 	cfg.recordComposite = recordScene_->isChecked();
 	return cfg;
 }
 
-SessionConfig IsoDock::sessionConfigFromWidgets() const
+SessionConfig IsoDock::resolveConfig(SessionConfig cfg, obs_data_t **videoSettings,
+				    obs_data_t **audioSettings) const
 {
-	return resolvedConfig(configFromWidgets());
+	*videoSettings = nullptr;
+	*audioSettings = nullptr;
+
+	obs_output_t *stream = obs_frontend_get_streaming_output();
+	obs_encoder_t *streamVideo = stream ? obs_output_get_video_encoder(stream) : nullptr;
+	obs_encoder_t *streamAudio = stream ? obs_output_get_audio_encoder(stream, 0) : nullptr;
+
+	if (cfg.videoEncoderId.empty()) {
+		const char *id = streamVideo ? obs_encoder_get_id(streamVideo) : nullptr;
+		const std::string wanted = id ? id : "";
+		cfg.videoEncoderId = (!wanted.empty() && muxableEncoderId(wanted))
+					     ? wanted
+					     : platformDefaultEncoderId();
+	}
+	cfg.videoEncoderId = realEncoderId(cfg.videoEncoderId);
+	if (!encoderRegistered(cfg.videoEncoderId) || !muxableEncoderId(cfg.videoEncoderId))
+		cfg.videoEncoderId = "obs_x264";
+
+	// obs_encoder_get_settings hands back an object the encoder itself owns, and the
+	// encoders read their settings when they initialise, so the recorder has to be given a
+	// copy of its own. The whole blob is forwarded untouched: obs-nvenc only honours
+	// "bitrate" while its own "rate_control" key is present, so picking keys apart would
+	// silently drop the stream's rate control.
+	if (streamVideo) {
+		obs_data_t *settings = obs_encoder_get_settings(streamVideo);
+		if (settings) {
+			const char *json = obs_data_get_json(settings);
+			if (json)
+				*videoSettings = obs_data_create_from_json(json);
+			const int64_t kbps = obs_data_get_int(settings, "bitrate");
+			if (kbps > 0)
+				cfg.bitrateBitsPerSec = (uint64_t)kbps * 1000ull;
+			obs_data_release(settings);
+		}
+	}
+	if (streamAudio) {
+		obs_data_t *settings = obs_encoder_get_settings(streamAudio);
+		if (settings) {
+			const char *json = obs_data_get_json(settings);
+			if (json)
+				*audioSettings = obs_data_create_from_json(json);
+			obs_data_release(settings);
+		}
+	}
+
+	uint32_t width = 0;
+	uint32_t height = 0;
+	capForName(cfg.videoSize, &width, &height);
+	if (cfg.videoSize == "stream") {
+		if (streamVideo) {
+			width = obs_encoder_get_width(streamVideo);
+			height = obs_encoder_get_height(streamVideo);
+		}
+		if (width == 0 || height == 0) {
+			struct obs_video_info ovi;
+			if (obs_get_video_info(&ovi)) {
+				width = ovi.output_width;
+				height = ovi.output_height;
+			}
+		}
+	}
+	cfg.capWidth = width;
+	cfg.capHeight = height;
+
+	if (stream)
+		obs_output_release(stream);
+	return cfg;
 }
 
 } // namespace iso

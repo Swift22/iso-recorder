@@ -1,0 +1,15 @@
+{
+  "display_name": "ISO Recorder",
+  "id": "io.github.swift22.iso-recorder",
+  "version": "0.4.0",
+  "os_arch": "windows-x64, macos-arm64",
+  "name": "iso-recorder",
+  "description": "Records one file per source while you stream, independent of the composite program output.",
+  "long_description": "An OBS Studio plugin that records each armed source on its own while you stream. Picture sources are written to a per-source file and audio-only sources to a 24-bit WAV, independent of the composite program output. A dock owns the session: tick sources to record them live or let the stream start and stop drive it, split a session into game folders without stopping, and get a session.json manifest listing every file's exact start offset for editing in DaVinci Resolve.",
+  "urls": {
+    "repository": "https://github.com/Swift22/iso-recorder",
+    "support": "https://github.com/Swift22/iso-recorder/issues"
+  },
+  "has_banner": false,
+  "has_icon": false
+}

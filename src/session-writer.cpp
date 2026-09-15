@@ -175,7 +175,8 @@ std::string buildSessionJson(const SessionInfo &info, const std::vector<Recordin
 		jsonNum(o, r.duration);
 		o += ", \"status\": ";
 		jsonString(o, statusName(r.status));
-		if (r.status == Status::Failed) {
+		if (r.status == Status::Failed ||
+		    (r.status == Status::Aborted && !r.error.empty())) {
 			o += ", \"error\": ";
 			jsonString(o, r.error);
 		}
@@ -215,6 +216,8 @@ std::string buildReadme(const SessionInfo &info, const std::vector<Recording> &r
 		std::string desc = r.label.empty() ? r.source : r.label;
 		if (r.status == Status::Failed)
 			desc += " (not recorded: " + r.error + ")";
+		else if (r.status == Status::Aborted && !r.error.empty())
+			desc += " (" + r.error + ")";
 		char line[512];
 		std::snprintf(line, sizeof line, "  %-*s%-14s%s\n", (int)fileWidth, file.c_str(),
 			      clock.c_str(), desc.c_str());

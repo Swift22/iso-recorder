@@ -1,4 +1,4 @@
-ISO Recorder 0.1.0
+ISO Recorder 0.4.0
 One file per source, while you stream.
 =====================================================
 
@@ -35,6 +35,13 @@ USE
 
   Tick "Also record the live scene" if you also want one reference file
   of the program exactly as viewers saw it.
+
+  "Recording size" starts at the same size as your stream. Pick something
+  smaller to save room and take work off the graphics card. It only ever
+  scales down, never up.
+
+  A source with see-through parts records them as green, not black —
+  a plain green panel sits behind every picture. There is nothing to set up.
 
   Playing more than one game? Press the blue "New game" button between
   them. It carries on recording without a break, but starts a new folder
@@ -76,8 +83,9 @@ WHAT IT NEEDS
 
   Each visual source is its own encoder running at once, alongside your
   stream. Recording four or five at a time is fine on a modern GPU;
-  past that, files can come out short without any error. The panel warns
-  you before that happens.
+  past that, files can come out short. The panel warns you before you
+  get there, and a file that does come out short is marked incomplete
+  instead of passing as finished.
 
 
 LICENSE

@@ -121,6 +121,21 @@ int main()
 		CHECK(splitReadme.find("02_Game/01_game.mov") != std::string::npos);
 	}
 
+	{
+		std::vector<Recording> shortRecs = recs;
+		shortRecs[0].status = Status::Aborted;
+		shortRecs[0].error =
+			"the encoder could not keep up: about 3600 frames were never recorded";
+		const std::string shortJson = buildSessionJson(info, shortRecs);
+		CHECK(shortJson.find("\"status\": \"aborted\", \"error\": \"the encoder could not "
+				     "keep up: about 3600 frames were never recorded\"") !=
+		      std::string::npos);
+		const std::string shortReadme = buildReadme(info, shortRecs);
+		CHECK(shortReadme.find(
+			      "(the encoder could not keep up: about 3600 frames were never recorded)") !=
+		      std::string::npos);
+	}
+
 	if (failures == 0)
 		std::printf("session-writer: all checks passed\n");
 	return failures == 0 ? 0 : 1;

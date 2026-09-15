@@ -1,0 +1,95 @@
+# This workflow has NOT been run or validated. It is a first draft of CI for this
+# project and must be exercised on real runners before it is trusted to build.
+name: Build Project
+
+on:
+  push:
+    tags:
+      - '*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: Build for macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install OBS.app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 32.2.2 --repo obsproject/obs-studio \
+            --pattern 'OBS-Studio-32.2.2-macOS-Apple.dmg' --dir "$RUNNER_TEMP/obs"
+          hdiutil attach "$RUNNER_TEMP/obs/OBS-Studio-32.2.2-macOS-Apple.dmg" -mountpoint "$RUNNER_TEMP/obsvol"
+          cp -R "$RUNNER_TEMP/obsvol/OBS.app" /Applications/
+          hdiutil detach "$RUNNER_TEMP/obsvol"
+
+      - name: Check out obs-studio headers
+        run: |
+          git clone --depth 1 --branch 32.2.2 \
+            https://github.com/obsproject/obs-studio.git "$RUNNER_TEMP/obs-studio"
+          git clone --depth 1 --branch v0.8.2 \
+            https://github.com/simd-everywhere/simde.git "$RUNNER_TEMP/obs-studio/deps/simde"
+
+      - name: Install Qt6
+        run: brew install qt
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build-mac -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+            -DOBS_SRC="$RUNNER_TEMP/obs-studio" \
+            -DOBS_APP="/Applications/OBS.app"
+          cmake --build build-mac
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-recorder-macos-arm64
+          path: build-mac/iso-recorder.plugin
+
+  windows:
+    name: Build for Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+          cache: true
+
+      - name: Check out obs-studio headers
+        run: |
+          git clone --depth 1 --branch 32.2.2 https://github.com/obsproject/obs-studio.git "$env:RUNNER_TEMP\obs-studio"
+
+      - name: Download OBS
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-studio/releases/download/32.2.2/OBS-Studio-32.2.2-Windows-x64.zip" -OutFile "$env:RUNNER_TEMP\obs.zip"
+          Expand-Archive "$env:RUNNER_TEMP\obs.zip" -DestinationPath "$env:RUNNER_TEMP\obs-app"
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build-win -G Ninja `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR;$env:RUNNER_TEMP\obs-app\obs-studio\lib\x64" `
+            -DOBS_SRC="$env:RUNNER_TEMP\obs-studio"
+          cmake --build build-win
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-recorder-windows-x64
+          path: |
+            build-win/iso-recorder.dll
+            data/

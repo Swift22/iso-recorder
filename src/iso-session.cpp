@@ -5,6 +5,13 @@
 #include <obs-frontend-api.h>
 #include <util/platform.h>
 
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -25,6 +32,8 @@ IsoSession::~IsoSession()
 	stop();
 	if (videoSettings_)
 		obs_data_release(videoSettings_);
+	if (audioSettings_)
+		obs_data_release(audioSettings_);
 }
 
 static std::tm localTime(std::time_t t)
@@ -74,15 +83,74 @@ static std::string platformName()
 #endif
 }
 
+static bool replaceFile(const std::string &from, const std::string &to)
+{
+#ifdef _WIN32
+	// The C runtime's rename() refuses to replace an existing file, and the manifest is
+	// rewritten in place for the whole session; MOVEFILE_REPLACE_EXISTING is the atomic
+	// overwrite this tmp-then-swap needs.
+	return MoveFileExA(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+	return std::rename(from.c_str(), to.c_str()) == 0;
+#endif
+}
+
+// A crash or force-kill while rewriting a manifest used to leave session.json torn in
+// place, which reads as "OBS crashed here" even when it did not. Write the whole file
+// beside the real one, force it to the platter, then swap it in, so the manifest is
+// always either the old one or the new one.
 static void writeFile(const std::string &path, const std::string &text)
 {
-	FILE *f = fopen(path.c_str(), "wb");
+	const std::string tmp = path + ".tmp";
+	FILE *f = fopen(tmp.c_str(), "wb");
 	if (!f) {
 		blog(LOG_WARNING, "[iso-recorder] could not write %s", path.c_str());
 		return;
 	}
-	fwrite(text.data(), 1, text.size(), f);
-	fclose(f);
+	bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+	if (ok && fflush(f) != 0)
+		ok = false;
+#ifdef _WIN32
+	if (ok && _commit(_fileno(f)) != 0)
+		ok = false;
+#else
+	if (ok && fsync(fileno(f)) != 0)
+		ok = false;
+#endif
+	if (fclose(f) != 0)
+		ok = false;
+	if (!ok || !replaceFile(tmp, path)) {
+		blog(LOG_WARNING, "[iso-recorder] could not write %s", path.c_str());
+		std::remove(tmp.c_str());
+	}
+}
+
+// A hardware encoder that falls behind drops frames without failing the output, so the
+// container comes out short while every status still says complete. Compare the packets
+// the output delivered against what the recording's own length should have produced.
+static bool frameShortfall(uint32_t delivered, double duration, double fps, uint64_t *missing)
+{
+	if (fps <= 0.0 || duration <= 0.0)
+		return false;
+	const double expected = fps * duration;
+	if (expected < 1.0)
+		return false;
+	const double lost = expected - (double)delivered;
+	if (lost <= expected * 0.02)
+		return false;
+	*missing = (uint64_t)std::llround(lost);
+	return true;
+}
+
+static std::string shortfallReason(uint64_t missing)
+{
+	uint64_t rounded = missing;
+	if (missing >= 1000)
+		rounded = (missing / 100) * 100;
+	else if (missing >= 100)
+		rounded = (missing / 10) * 10;
+	return "the encoder could not keep up: about " + std::to_string(rounded) +
+	       " frames were never recorded";
 }
 
 static std::string labelFor(const std::string &name, Kind kind)
@@ -142,7 +210,9 @@ std::string IsoSession::statusFor(obs_source_t *source) const
 	}
 	const std::string name = obs_source_get_name(source);
 	for (auto it = finished_.rbegin(); it != finished_.rend(); ++it)
-		if (it->status == Status::Failed && it->source == name)
+		if (it->source == name &&
+		    (it->status == Status::Failed ||
+		     (it->status == Status::Aborted && !it->error.empty())))
 			return it->error;
 	return "";
 }
@@ -155,9 +225,14 @@ RowState IsoSession::rowStateFor(obs_source_t *source) const
 	if (e)
 		return RowState::WillRecord;
 	const std::string name = obs_source_get_name(source);
-	for (auto it = finished_.rbegin(); it != finished_.rend(); ++it)
-		if (it->status == Status::Failed && it->source == name)
+	for (auto it = finished_.rbegin(); it != finished_.rend(); ++it) {
+		if (it->source != name)
+			continue;
+		if (it->status == Status::Failed)
 			return RowState::Failed;
+		if (it->status == Status::Aborted && !it->error.empty())
+			return RowState::Aborted;
+	}
 	return RowState::Idle;
 }
 
@@ -281,8 +356,18 @@ void IsoSession::closeEntry(Entry &e, Status okStatus)
 	const bool failed = e.recorder->failed();
 	const std::string error = failed ? e.recorder->error() : "";
 	e.recorder->stop();
-	finished_.push_back({e.name, e.kind, file, codec, offset, duration,
-			     failed ? Status::Failed : okStatus, error, e.label, gameFolder_});
+	Status status = failed ? Status::Failed : okStatus;
+	std::string reason = error;
+	if (!failed && okStatus == Status::Complete && e.kind == Kind::Video) {
+		uint64_t missing = 0;
+		if (frameShortfall(e.recorder->totalFrames(), duration, info_.video.fps, &missing)) {
+			status = Status::Aborted;
+			reason = shortfallReason(missing);
+			blog(LOG_WARNING, "[iso-recorder] %s: %s", e.name.c_str(), reason.c_str());
+		}
+	}
+	finished_.push_back({e.name, e.kind, file, codec, offset, duration, status, reason, e.label,
+			     gameFolder_});
 	e.recorder.reset();
 }
 
@@ -299,7 +384,8 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 	}
 	composite_ = std::make_unique<SourceRecorder>(scene, "Session",
 						      segmentDir() + "/00_Session.mov", videoEncoderId_,
-						      videoSettings_, Kind::Video, audioCodec_);
+						      videoSettings_, audioSettings_, config_.capWidth,
+						      config_.capHeight, Kind::Video, audioCodec_);
 	obs_source_release(scene);
 	std::string err;
 	if (!composite_->start(&err)) {
@@ -324,11 +410,21 @@ void IsoSession::closeComposite()
 	const double duration = composite_->durationSeconds();
 	const bool failed = composite_->failed();
 	const std::string error = failed ? composite_->error() : "";
+	const std::string codec = composite_->codec();
 	composite_->stop();
+	Status status = failed ? Status::Failed : Status::Complete;
+	std::string reason = error;
+	if (!failed) {
+		uint64_t missing = 0;
+		if (frameShortfall(composite_->totalFrames(), duration, info_.video.fps, &missing)) {
+			status = Status::Aborted;
+			reason = shortfallReason(missing);
+			blog(LOG_WARNING, "[iso-recorder] the live scene: %s", reason.c_str());
+		}
+	}
 	finished_.push_back({"Session", Kind::Video,
-			     makeFilename(Kind::Video, 0, "Session", 1), composite_->codec(),
-			     offset, duration, failed ? Status::Failed : Status::Complete,
-			     error, labelFor("Session", Kind::Video), gameFolder_});
+			     makeFilename(Kind::Video, 0, "Session", 1), codec, offset, duration,
+			     status, reason, labelFor("Session", Kind::Video), gameFolder_});
 	composite_.reset();
 }
 
@@ -337,7 +433,8 @@ bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 	const std::string file = makeFilename(e.kind, e.index, e.name, e.segment);
 	const std::string path = segmentDir() + "/" + file;
 	e.recorder = std::make_unique<SourceRecorder>(e.source, e.name, path, videoEncoderId_,
-						      videoSettings_, e.kind, audioCodec_);
+						      videoSettings_, audioSettings_, config_.capWidth,
+						      config_.capHeight, e.kind, audioCodec_);
 	std::string err;
 	if (!e.recorder->start(&err)) {
 		finished_.push_back({e.name, e.kind, "", "", std::nullopt, std::nullopt,
@@ -379,6 +476,11 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 	videoSettings_ = cfg.videoSettings;
 	if (videoSettings_)
 		obs_data_addref(videoSettings_);
+	if (audioSettings_)
+		obs_data_release(audioSettings_);
+	audioSettings_ = cfg.audioSettings;
+	if (audioSettings_)
+		obs_data_addref(audioSettings_);
 	audioCodec_ = cfg.audioCodec;
 	active_ = true;
 	if (!globalAudioHeld_) {
@@ -413,6 +515,12 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 
 void IsoSession::stop()
 {
+	// OBS destroys every source during its own shutdown, which makes the global
+	// source_remove handler call back in here; without this the first stop would
+	// run the 5 s output wait a second time from inside OBS's teardown.
+	if (stopping_)
+		return;
+	stopping_ = true;
 	for (auto &e : entries_) {
 		closeEntry(e, Status::Complete);
 		if (e.source)
@@ -437,6 +545,7 @@ void IsoSession::stop()
 	indexFor_.clear();
 	nextIndex_ = {{Kind::Video, 1}, {Kind::Audio, 1}};
 	failedSeen_ = 0;
+	stopping_ = false;
 }
 
 std::vector<Recording> IsoSession::recordings() const { return finished_; }
@@ -507,7 +616,12 @@ std::string IsoSession::refreshManifest()
 	return {};
 }
 
-void IsoSession::onSourceRemoved(obs_source_t *source) { disarm(source); }
+void IsoSession::onSourceRemoved(obs_source_t *source)
+{
+	if (stopping_)
+		return;
+	disarm(source);
+}
 
 void IsoSession::onSceneChanged(obs_source_t *scene)
 {

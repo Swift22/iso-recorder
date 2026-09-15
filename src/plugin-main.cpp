@@ -23,6 +23,9 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 {
 	switch (event) {
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+		// There is no streaming output at module load, so "same as the stream" resolved
+		// then is only a guess. Resolve it now that the real encoder exists.
+		g_dock->refreshSessionConfig();
 		if (g_session->config().withStream && !g_session->active()) {
 			if (!g_session->isArmedAny()) {
 				// Saying nothing here is how a whole stream goes by with no files.
@@ -66,6 +69,15 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 		g_dock->refreshSources();
 		break;
+	case OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN:
+		// OBS destroys every scene and source in ClearSceneData() before it fires
+		// EXIT, and a mov_output finishes only when one more encoded packet
+		// reaches it, so a stop started from EXIT can never finalise. This event
+		// is the last one that runs while the sources and the video graph are
+		// still whole, which is where a recording has to be closed.
+		if (g_session->active())
+			g_session->stop();
+		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		if (g_session->active())
 			g_session->stop();
@@ -76,13 +88,34 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 	}
 }
 
+struct SourceRemoval {
+	std::string uuid;
+};
+
+static void onSourceRemovedTask(void *param)
+{
+	auto *job = static_cast<SourceRemoval *>(param);
+	if (g_session) {
+		obs_source_t *source = obs_get_source_by_uuid(job->uuid.c_str());
+		if (source) {
+			g_session->onSourceRemoved(source);
+			obs_source_release(source);
+		}
+	}
+	delete job;
+}
+
+// source_remove can arrive off the main thread, while the stop path touches outputs and
+// encoders; hand only the uuid across and do the real work on the UI thread.
 static void onSourceRemoveSignal(void *, calldata_t *calldata)
 {
 	void *ptr = nullptr;
 	calldata_get_ptr(calldata, "source", &ptr);
 	auto *source = static_cast<obs_source_t *>(ptr);
-	if (source)
-		g_session->onSourceRemoved(source);
+	if (!source)
+		return;
+	auto *job = new SourceRemoval{obs_source_get_uuid(source)};
+	obs_queue_task(OBS_TASK_UI, onSourceRemovedTask, job, false);
 }
 
 bool obs_module_load(void)

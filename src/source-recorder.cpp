@@ -2,18 +2,27 @@
 
 #include <util/platform.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <utility>
 
 namespace iso {
 
+// A private view renders its channels in ascending order and the default straight
+// alpha blend lets a source's transparent pixels show what is beneath it, so the
+// underlay goes in channel 0 and the recorded source sits above it in channel 1.
+static constexpr size_t kBackgroundChannel = 0;
+static constexpr size_t kSourceChannel = 1;
+static constexpr long long kGreenScreenColor = 0xFF00FF00LL;
+
 SourceRecorder::SourceRecorder(obs_source_t *source, std::string name, std::string path,
-			       std::string videoEncoderId, obs_data_t *videoSettings, Kind kind,
-			       std::string audioCodec)
+			       std::string videoEncoderId, obs_data_t *videoSettings,
+			       obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight,
+			       Kind kind, std::string audioCodec)
 	: source_(obs_source_get_ref(source)), name_(std::move(name)), path_(std::move(path)),
-	  kind_(kind), videoEncoderId_(std::move(videoEncoderId)),
-	  audioCodec_(std::move(audioCodec))
+	  kind_(kind), videoEncoderId_(std::move(videoEncoderId)), capWidth_(capWidth),
+	  capHeight_(capHeight), audioCodec_(std::move(audioCodec))
 {
 	const uint32_t flags = obs_source_get_output_flags(source_);
 	hasVideo_ = (flags & OBS_SOURCE_VIDEO) != 0;
@@ -23,6 +32,11 @@ SourceRecorder::SourceRecorder(obs_source_t *source, std::string name, std::stri
 		if (json)
 			videoSettings_ = obs_data_create_from_json(json);
 	}
+	if (audioSettings) {
+		const char *json = obs_data_get_json(audioSettings);
+		if (json)
+			audioSettings_ = obs_data_create_from_json(json);
+	}
 }
 
 SourceRecorder::~SourceRecorder()
@@ -30,6 +44,8 @@ SourceRecorder::~SourceRecorder()
 	stop();
 	if (videoSettings_)
 		obs_data_release(videoSettings_);
+	if (audioSettings_)
+		obs_data_release(audioSettings_);
 	if (source_)
 		obs_source_release(source_);
 }
@@ -96,16 +112,48 @@ bool SourceRecorder::start(std::string *error)
 		return fail("the source has no picture yet");
 	w += (w & 1);
 	h += (h & 1);
+
+	uint32_t ow = w;
+	uint32_t oh = h;
+	if (capWidth_ && capHeight_) {
+		const double scale = std::min({1.0, (double)capWidth_ / (double)w,
+					      (double)capHeight_ / (double)h});
+		ow = (uint32_t)std::llround((double)w * scale);
+		oh = (uint32_t)std::llround((double)h * scale);
+		ow += (ow & 1);
+		oh += (oh & 1);
+		if (ow > capWidth_)
+			ow -= 2;
+		if (oh > capHeight_)
+			oh -= 2;
+		if (ow == 0)
+			ow = 2;
+		if (oh == 0)
+			oh = 2;
+	}
 	ovi.base_width = w;
 	ovi.base_height = h;
-	ovi.output_width = w;
-	ovi.output_height = h;
+	ovi.output_width = ow;
+	ovi.output_height = oh;
 
 	view_ = obs_view_create();
 	video_ = obs_view_add2(view_, &ovi);
 	if (!video_)
 		return fail("could not make a private video output");
-	obs_view_set_source(view_, 0, source_);
+
+	obs_data_t *bg = obs_data_create();
+	obs_data_set_int(bg, "color", kGreenScreenColor);
+	obs_data_set_int(bg, "width", (long long)w);
+	obs_data_set_int(bg, "height", (long long)h);
+	background_ = obs_source_create_private(obs_get_latest_input_type_id("color_source"),
+						name_.c_str(), bg);
+	obs_data_release(bg);
+	if (!background_)
+		return fail("could not make the recording background");
+	obs_view_set_source(view_, kBackgroundChannel, background_);
+	obs_view_set_source(view_, kSourceChannel, source_);
+	obs_source_inc_showing(background_);
+	bgShowingInced_ = true;
 	obs_source_inc_showing(source_);
 	showingInced_ = true;
 
@@ -168,9 +216,7 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 		error_ = "the audio device did not open";
 		return false;
 	}
-	obs_data_t *as = obs_data_create();
-	audioEnc_ = obs_audio_encoder_create("ffmpeg_aac", name_.c_str(), as, 0, nullptr);
-	obs_data_release(as);
+	audioEnc_ = obs_audio_encoder_create("ffmpeg_aac", name_.c_str(), audioSettings_, 0, nullptr);
 	if (!audioEnc_) {
 		error_ = "the audio encoder did not open";
 		return false;
@@ -246,13 +292,21 @@ void SourceRecorder::stop()
 			// stopping event with nothing left to signal it, so the
 			// release below would wait forever.
 			obs_output_force_stop(output_);
-			if (stopEvent_ && os_event_timedwait(stopEvent_, 5000) == ETIMEDOUT)
+			if (stopEvent_ && os_event_timedwait(stopEvent_, 5000) == ETIMEDOUT) {
 				blog(LOG_WARNING,
 				     "[iso-recorder] %s: the recorder did not report stopping within 5 seconds",
 				     name_.c_str());
+				// A mov_output only finalises when one more encoded
+				// packet reaches it, and obs_output_destroy() waits
+				// on that same stopping event for ever. Ending the
+				// capture signals the event and deactivates the
+				// output, so the release below still returns.
+				obs_output_end_data_capture(output_);
+			}
 			signal_handler_disconnect(obs_output_get_signal_handler(output_), "stop",
 						  onOutputStopped, this);
 		}
+		totalFrames_ = (uint32_t)obs_output_get_total_frames(output_);
 		obs_output_release(output_);
 		output_ = nullptr;
 	}
@@ -261,15 +315,29 @@ void SourceRecorder::stop()
 		os_event_destroy(stopEvent_);
 		stopEvent_ = nullptr;
 	}
-	if (audioEnc_)
+	// The encoders go before the audio device so the output's interleaver keeps
+	// being fed for as long as the output is still draining.
+	if (audioEnc_) {
 		obs_encoder_release(audioEnc_);
-	if (videoEnc_)
+		audioEnc_ = nullptr;
+	}
+	if (videoEnc_) {
 		obs_encoder_release(videoEnc_);
-	audioEnc_ = nullptr;
-	videoEnc_ = nullptr;
+		videoEnc_ = nullptr;
+	}
+	if (audio_) {
+		if (!hasVideo_)
+			audio_output_disconnect(audio_, 0, onPcm, this);
+		audio_output_close(audio_);
+		audio_ = nullptr;
+	}
 	if (showingInced_) {
 		obs_source_dec_showing(source_);
 		showingInced_ = false;
+	}
+	if (bgShowingInced_ && background_) {
+		obs_source_dec_showing(background_);
+		bgShowingInced_ = false;
 	}
 	if (view_) {
 		obs_view_remove(view_);
@@ -277,11 +345,9 @@ void SourceRecorder::stop()
 		view_ = nullptr;
 		video_ = nullptr;
 	}
-	if (audio_) {
-		if (!hasVideo_)
-			audio_output_disconnect(audio_, 0, onPcm, this);
-		audio_output_close(audio_);
-		audio_ = nullptr;
+	if (background_) {
+		obs_source_release(background_);
+		background_ = nullptr;
 	}
 	wav_.close();
 }
@@ -296,7 +362,7 @@ void SourceRecorder::setSource(obs_source_t *next)
 	}
 	obs_source_release(source_);
 	source_ = obs_source_get_ref(next);
-	obs_view_set_source(view_, 0, source_);
+	obs_view_set_source(view_, kSourceChannel, source_);
 	obs_source_inc_showing(source_);
 	showingInced_ = true;
 }

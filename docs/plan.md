@@ -7,6 +7,12 @@ implementation agent reads the spec before its task; where the two disagree, the
 This plugin is not part of the Toast pipeline. `CONTEXT.md` vocabulary does not apply here; **ISO**
 means one isolated recording of one source. Commits go straight to `main`.
 
+> **Superseded in part.** `docs/plan-background-and-performance.md` is the newer brief and
+> supersedes this file's **Task 6** (the per-session cost behaviour and its drift / encoder-ceiling
+> measurements), **Task 7** (the dock's session controls), and **Task 10**'s measurement guidance.
+> It adds the green background, the Spout guard, the recording-size cap and encoder-settings
+> mirroring; where the two disagree about those behaviours, the newer plan wins.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.

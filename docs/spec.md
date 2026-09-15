@@ -138,8 +138,11 @@ start or later — and destroyed when it is disarmed, when the source goes away,
 ends. Arming again later creates a new recorder and a new file.
 
 **Video path.** Read the source's current size, create an `obs_view_t` with `obs_view_create()`, and
-add a video output with `obs_view_add2()`, using the source's dimensions as base and output size.
-Set the source into the view (`obs_view_set_source`). The view's `video_t *` is timestamped by
+add a video output with `obs_view_add2()`, using the source's dimensions as base size and the
+recording-size cap as output size — the source's own dimensions when no cap applies. Set the source
+into the view (`obs_view_set_source`), on the channel above a private `color_source` filled with
+**chroma green** (`0xFF00FF00`), so a source's transparent regions record green instead of black
+(`docs/adr/0002`). The view's `video_t *` is timestamped by
 OBS's graphics thread, so the encoder receives correctly-timed frames without us touching pixels.
 This is the crucial difference from a naive texrender grab: the frames carry OBS's clock, which is
 what makes A/V sync across independent files hold.
@@ -297,7 +300,10 @@ A Qt dock, registered with `obs_frontend_add_dock_by_id`. One window:
   file it is writing. The list is live: a source added to the collection appears here without a
   restart, and can be armed at once.
 - **Session** — output base folder (with a browse button), "start and stop with the stream"
-  (default on), "also record the live scene" (default off), the video encoder, the audio format.
+  (default on), "also record the live scene" (default off), the video encoder, the audio format,
+  and the **recording size**: *same as the stream*, *original size*, or a cap of 2160p/1440p/1080p/
+  720p/480p. The cap shrinks the convert, the readback and the encode in proportion to pixel count;
+  it never upscales a smaller source.
 - **Controls** — one Record/Stop button for the session, and per-source status text showing the
   file being written or the failure reason.
 
@@ -349,11 +355,16 @@ running session does not.
 
 ### Encoder choice and the cost ceiling
 
-Default to the **same hardware encoder family the stream uses**, discovered from the streaming
-output, falling back to the platform's preferred hardware encoder (VideoToolbox on macOS,
-NVENC/QSV/AMF on Windows) and to `obs_x264` last. Overridable in the dock. Each visual source is an
-independent encode: **N armed visuals cost N hardware encodes at once.** The default warning
-threshold is set from measured numbers (Further Notes), not a guess.
+Default to the **same hardware encoder the stream uses**, discovered from the streaming output —
+its **id and its settings**, so the ISO files match the stream's bitrate and rate control. (Before
+this change, "same as the stream" shared only the encoder id, and every ISO encoder ran the
+encoder's registered defaults.) Fall back to the platform's preferred hardware encoder
+(VideoToolbox on macOS, NVENC/QSV/AMF on Windows) and to `obs_x264` last. Overridable in the dock.
+Each visual source is an independent encode: **N armed visuals cost N hardware encodes at once.**
+The warning threshold is **3**, set from the measured ceiling on the Windows box (Further Notes),
+not a guess. The measured cost is published in `README.md` §Measurements and
+`docs/plan-background-and-performance.md`; the remaining duplicate per-source render is accepted
+as-is because it is not a measurable share of frame time (`docs/adr/0003`).
 
 ### Build and install
 

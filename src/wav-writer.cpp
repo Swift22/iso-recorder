@@ -24,13 +24,14 @@ static void putTag(std::vector<uint8_t> &v, const char *tag)
 }
 
 std::vector<uint8_t> buildWavHeader(uint32_t dataBytes, uint32_t sampleRate, uint16_t channels,
-				    uint16_t bitsPerSample)
+				    uint16_t bitsPerSample, bool streaming)
 {
 	const uint16_t blockAlign = (uint16_t)(channels * bitsPerSample / 8);
 	std::vector<uint8_t> v;
 	v.reserve(44);
+	// 0xFFFFFFFF is the RIFF "unknown length" convention, so a force-killed file still opens.
 	putTag(v, "RIFF");
-	putU32(v, 36u + dataBytes);
+	putU32(v, streaming ? 0xFFFFFFFFu : 36u + dataBytes);
 	putTag(v, "WAVE");
 	putTag(v, "fmt ");
 	putU32(v, 16);
@@ -41,7 +42,7 @@ std::vector<uint8_t> buildWavHeader(uint32_t dataBytes, uint32_t sampleRate, uin
 	putU16(v, blockAlign);
 	putU16(v, bitsPerSample);
 	putTag(v, "data");
-	putU32(v, dataBytes);
+	putU32(v, streaming ? 0xFFFFFFFFu : dataBytes);
 	return v;
 }
 
@@ -56,7 +57,7 @@ bool WavWriter::open(const std::string &path, uint32_t sampleRate, uint16_t chan
 	file_ = std::fopen(path.c_str(), "wb");
 	if (!file_)
 		return false;
-	const auto header = buildWavHeader(0, sampleRate, channels, bits_);
+	const auto header = buildWavHeader(0, sampleRate, channels, bits_, true);
 	if (std::fwrite(header.data(), 1, header.size(), file_) != header.size()) {
 		std::fclose(file_);
 		file_ = nullptr;
