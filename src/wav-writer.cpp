@@ -12,6 +12,12 @@ static void putU32(std::vector<uint8_t> &v, uint32_t x)
 	v.push_back((uint8_t)((x >> 24) & 0xff));
 }
 
+static void putU64(std::vector<uint8_t> &v, uint64_t x)
+{
+	putU32(v, (uint32_t)(x & 0xffffffffull));
+	putU32(v, (uint32_t)((x >> 32) & 0xffffffffull));
+}
+
 static void putU16(std::vector<uint8_t> &v, uint16_t x)
 {
 	v.push_back((uint8_t)(x & 0xff));
@@ -23,16 +29,34 @@ static void putTag(std::vector<uint8_t> &v, const char *tag)
 	v.insert(v.end(), tag, tag + 4);
 }
 
-std::vector<uint8_t> buildWavHeader(uint32_t dataBytes, uint32_t sampleRate, uint16_t channels,
-				    uint16_t bitsPerSample, bool streaming)
+// Everything in the file that is not sample data: the two 12-byte chunk headers, the
+// placeholder chunk, and the fmt chunk. The RIFF size field counts all of it bar the
+// first 8 bytes.
+static constexpr uint64_t kNonDataBytes = kWavHeaderBytes - 8;
+
+std::vector<uint8_t> buildWavHeader(uint64_t dataBytes, uint32_t sampleRate, uint16_t channels, uint16_t bitsPerSample,
+				    bool streaming)
 {
 	const uint16_t blockAlign = (uint16_t)(channels * bitsPerSample / 8);
+	const uint64_t riffBytes = kNonDataBytes + dataBytes;
+	const bool big = riffBytes > 0xFFFFFFFFull;
+
 	std::vector<uint8_t> v;
-	v.reserve(44);
-	// 0xFFFFFFFF is the RIFF "unknown length" convention, so a force-killed file still opens.
-	putTag(v, "RIFF");
-	putU32(v, streaming ? 0xFFFFFFFFu : 36u + dataBytes);
+	v.reserve(kWavHeaderBytes);
+	putTag(v, big ? "RF64" : "RIFF");
+	putU32(v, (streaming || big) ? 0xFFFFFFFFu : (uint32_t)riffBytes);
 	putTag(v, "WAVE");
+
+	// 28 bytes either way: "ds64" once the file outgrew 32-bit sizes, otherwise "JUNK",
+	// which every reader skips. Reserving it while recording is what lets a file that
+	// turns out to be huge become RF64 without rewriting the samples.
+	putTag(v, big ? "ds64" : "JUNK");
+	putU32(v, 28);
+	putU64(v, big ? riffBytes : 0);
+	putU64(v, big ? dataBytes : 0);
+	putU64(v, big && blockAlign ? dataBytes / blockAlign : 0);
+	putU32(v, 0); // table length: no chunks beyond data need 64-bit sizes
+
 	putTag(v, "fmt ");
 	putU32(v, 16);
 	putU16(v, 1);
@@ -41,8 +65,9 @@ std::vector<uint8_t> buildWavHeader(uint32_t dataBytes, uint32_t sampleRate, uin
 	putU32(v, sampleRate * blockAlign);
 	putU16(v, blockAlign);
 	putU16(v, bitsPerSample);
+
 	putTag(v, "data");
-	putU32(v, streaming ? 0xFFFFFFFFu : dataBytes);
+	putU32(v, (streaming || big) ? 0xFFFFFFFFu : (uint32_t)dataBytes);
 	return v;
 }
 
@@ -71,8 +96,9 @@ bool WavWriter::write(const float *const *planar, size_t frames)
 	if (!file_)
 		return false;
 	const uint64_t bytes = (uint64_t)frames * channels_ * 3u;
-	// Keep both the data field and the 36-byte-preceded RIFF field inside uint32.
-	if (bytes + dataBytes_ + 36u > 0xFFFFFFFFull) {
+	// A recording long enough to overflow this is longer than any computer's uptime;
+	// the 4 GiB ceiling that used to stop a stream at four hours is gone with RF64.
+	if (bytes > (uint64_t)SIZE_MAX || dataBytes_ + bytes < dataBytes_) {
 		failed_ = true;
 		return false;
 	}
@@ -101,7 +127,7 @@ bool WavWriter::close()
 {
 	if (!file_)
 		return false;
-	const auto header = buildWavHeader((uint32_t)dataBytes_, sampleRate_, channels_, bits_);
+	const auto header = buildWavHeader(dataBytes_, sampleRate_, channels_, bits_);
 	bool ok = !failed_;
 	if (std::fseek(file_, 0, SEEK_SET) != 0)
 		ok = false;

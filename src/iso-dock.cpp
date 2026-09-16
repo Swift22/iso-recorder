@@ -417,24 +417,27 @@ void IsoDock::refreshSources()
 		},
 		&ctx);
 
-	// Ticked sources are remembered per scene collection, and ending a session
-	// clears the session's own set — so put the ticks back whenever the session is
-	// idle with nothing ticked. Someone who unticks everything has an empty
-	// remembered set, so nothing comes back on its own. A source only exists once
-	// its collection has loaded, hence the wait for a non-empty list.
+	// Ticked sources are remembered per scene collection, and ending a session clears
+	// the session's own set — so put the ticks back whenever the session is idle.
+	// Unticking a source drops it from the remembered set, so nothing a person turned
+	// off comes back on its own. This runs every tick rather than once: the audio
+	// devices exist before the scene collection has loaded, and restoring only until
+	// something was ticked left every source in the collection untickable for the whole
+	// stream, because the first tick had already used the one chance up.
 	const char *collection = obs_frontend_get_current_scene_collection();
 	const std::string collectionName = collection ? collection : "";
 	if (collectionName != armedCollection_) {
 		armedCollection_ = collectionName;
 		armed_ = loadArmedSources(armedCollection_);
 	}
-	if (!session_->active() && !session_->isArmedAny() && !armed_.empty() &&
-	    !(pictureSources.empty() && soundSources.empty())) {
+	if (!session_->active() && !armed_.empty() && !(pictureSources.empty() && soundSources.empty())) {
+		const size_t before = session_->armedVisualCount();
 		restoreArms(pictureSources, soundSources);
-		if (session_->armedVisualCount() > kEncoderWarnThreshold)
+		if (session_->armedVisualCount() != before && session_->armedVisualCount() > kEncoderWarnThreshold) {
 			blog(LOG_WARNING,
 			     "[iso-recorder] the remembered set is %zu video files at once, more than this machine is expected to keep up with",
 			     session_->armedVisualCount());
+		}
 	}
 
 	updating_ = true;
@@ -552,8 +555,8 @@ void IsoDock::onRecordClicked()
 {
 	QString message;
 	if (session_->active()) {
-		session_->stop();
-		message = tr("Stopped.");
+		session_->stop(true);
+		message = tr("Stopped. Record again to carry on in the same folder.");
 	} else {
 		refreshSessionConfig();
 		const SessionConfig &cfg = session_->config();

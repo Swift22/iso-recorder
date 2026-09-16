@@ -132,12 +132,20 @@ static bool frameShortfall(uint32_t delivered, double duration, double fps, uint
 {
 	if (fps <= 0.0 || duration <= 0.0)
 		return false;
+	// An encoder takes a moment to deliver its first frames, which is a large share of a
+	// short file and none of a long one. Judging a few seconds of recording on that ramp
+	// called healthy files broken, so short files are not judged and half a second of
+	// start-up is never counted as missing.
+	if (duration < 10.0) {
+		return false;
+	}
 	const double expected = fps * duration;
 	if (expected < 1.0)
 		return false;
 	const double lost = expected - (double)delivered;
-	if (lost <= expected * 0.02)
+	if (lost <= std::fmax(expected * 0.02, fps * 0.5)) {
 		return false;
+	}
 	*missing = (uint64_t)std::llround(lost);
 	return true;
 }
@@ -207,6 +215,9 @@ std::string IsoSession::statusFor(obs_source_t *source) const
 		if (e->recorder->failed())
 			return e->recorder->error();
 		return makeFilename(e->kind, e->index, e->name, e->segment);
+	}
+	if (e && e->waitingForPicture) {
+		return "waiting for a picture — it will record as soon as one appears";
 	}
 	const std::string name = obs_source_get_name(source);
 	for (auto it = finished_.rbegin(); it != finished_.rend(); ++it)
@@ -329,12 +340,18 @@ bool IsoSession::arm(obs_source_t *source, std::string *error)
 	return ok;
 }
 
+// Unticking is a decision, not a fault: the file it closes is complete.
 void IsoSession::disarm(obs_source_t *source)
+{
+	removeEntry(source, Status::Complete, {});
+}
+
+void IsoSession::removeEntry(obs_source_t *source, Status status, const std::string &reason)
 {
 	Entry *e = find(source);
 	if (!e)
 		return;
-	closeEntry(*e, Status::Aborted);
+	closeEntry(*e, status, reason);
 	obs_source_release(e->source);
 	const auto at = e - entries_.data();
 	entries_.erase(entries_.begin() + at);
@@ -345,7 +362,7 @@ std::string IsoSession::segmentDir() const { return folder_ + "/" + gameFolder_;
 
 // Close one recorder into the manifest. Everything the recording needs is read off
 // the recorder before stop() clears its start time.
-void IsoSession::closeEntry(Entry &e, Status okStatus)
+void IsoSession::closeEntry(Entry &e, Status okStatus, const std::string &abortReason)
 {
 	if (!e.recorder)
 		return;
@@ -358,6 +375,9 @@ void IsoSession::closeEntry(Entry &e, Status okStatus)
 	e.recorder->stop();
 	Status status = failed ? Status::Failed : okStatus;
 	std::string reason = error;
+	if (!failed && okStatus == Status::Aborted) {
+		reason = abortReason;
+	}
 	if (!failed && okStatus == Status::Complete && e.kind == Kind::Video) {
 		uint64_t missing = 0;
 		if (frameShortfall(e.recorder->totalFrames(), duration, info_.video.fps, &missing)) {
@@ -446,6 +466,17 @@ void IsoSession::closeComposite()
 
 bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 {
+	// A capture whose app is not up yet has no picture. That is not a failure — the
+	// source is still armed, and retryWaiting() starts it the moment a picture appears.
+	if (e.kind == Kind::Video && (obs_source_get_width(e.source) == 0 || obs_source_get_height(e.source) == 0)) {
+		if (!e.waitingForPicture) {
+			e.waitingForPicture = true;
+			blog(LOG_INFO, "[iso-recorder] %s: no picture yet, so it will start recording when one appears",
+			     e.name.c_str());
+		}
+		return true;
+	}
+	e.waitingForPicture = false;
 	const std::string file = makeFilename(e.kind, e.index, e.name, e.segment);
 	const std::string path = segmentDir() + "/" + file;
 	e.recorder = std::make_unique<SourceRecorder>(e.source, e.name, path, videoEncoderId_,
@@ -471,16 +502,29 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 {
 	if (error)
 		error->clear();
+	// Stopping with the button and pressing Record again is one session with a break in
+	// it, not two: same folder, same clock, the next numbered game folder. Only a folder
+	// that is still where it was, under the same base path, can be carried on.
+	const bool resuming = canResume_ && !folder_.empty() && folder_.rfind(cfg.basePath + "/", 0) == 0 &&
+			      os_file_exists(folder_.c_str());
+	canResume_ = false;
 	config_ = cfg;
-	folder_ = cfg.basePath + "/" + nowStamp();
-	if (os_mkdirs(folder_.c_str()) != 0 && !os_file_exists(folder_.c_str())) {
-		if (error)
-			*error = "could not create the session folder";
-		return false;
+	if (resuming) {
+		++gameNumber_;
+	} else {
+		folder_ = cfg.basePath + "/" + nowStamp();
+		if (os_mkdirs(folder_.c_str()) != 0 && !os_file_exists(folder_.c_str())) {
+			if (error) {
+				*error = "could not create the session folder";
+			}
+			return false;
+		}
+		// One session can hold several games; every session starts with its first.
+		gameNumber_ = 1;
 	}
-	// One session can hold several games; every session starts with its first.
-	gameNumber_ = 1;
-	gameFolder_ = "01_Game";
+	char gameName[32];
+	std::snprintf(gameName, sizeof gameName, "%02d_Game", gameNumber_);
+	gameFolder_ = gameName;
 	if (os_mkdirs(segmentDir().c_str()) != 0 && !os_file_exists(segmentDir().c_str())) {
 		if (error)
 			*error = "could not create the game folder";
@@ -503,33 +547,43 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 		obs_add_raw_audio_callback(0, nullptr, onGlobalAudioKeepalive, nullptr);
 		globalAudioHeld_ = true;
 	}
-	epochNs_ = os_gettime_ns();
-	info_ = {};
-	info_.started = isoNow();
-	info_.dateLine = humanDate();
-	info_.obsVersion = obs_get_version_string();
-	info_.platform = platformName();
-	struct obs_video_info ovi;
-	if (obs_get_video_info(&ovi)) {
-		info_.video.width = (int)ovi.output_width;
-		info_.video.height = (int)ovi.output_height;
-		info_.video.fps = (double)ovi.fps_num / (double)ovi.fps_den;
+	// A resumed session keeps its clock, its start time and everything already recorded,
+	// so every file in the folder stays on one timeline; only the "ended" line reopens.
+	if (resuming) {
+		info_.ended = std::nullopt;
+		info_.duration = std::nullopt;
+	} else {
+		epochNs_ = os_gettime_ns();
+		info_ = {};
+		info_.started = isoNow();
+		info_.dateLine = humanDate();
+		info_.obsVersion = obs_get_version_string();
+		info_.platform = platformName();
+		struct obs_video_info ovi;
+		if (obs_get_video_info(&ovi)) {
+			info_.video.width = (int)ovi.output_width;
+			info_.video.height = (int)ovi.output_height;
+			info_.video.fps = (double)ovi.fps_num / (double)ovi.fps_den;
+		}
+		finished_.clear();
 	}
-	finished_.clear();
 	failedSeen_ = 0;
 	// Numbering counters are NOT reset here: sources may have been armed while
 	// the session was inactive, and their arm() already assigned index/segment.
 	bool ok = true;
+	// A resumed game is not the start of the clock: its files begin however long the break
+	// lasted after the session epoch, exactly as a "New game" mid-session does, so the
+	// editor drops them at their listed offset instead of on top of the first game.
 	for (auto &e : entries_)
-		if (!startEntry(e, error, true))
+		if (!startEntry(e, error, !resuming))
 			ok = false;
 	if (config_.recordComposite)
-		startComposite(nullptr, true);
+		startComposite(nullptr, !resuming);
 	rewriteManifest();
 	return ok;
 }
 
-void IsoSession::stop()
+void IsoSession::stop(bool canResume)
 {
 	// OBS destroys every source during its own shutdown, which makes the global
 	// source_remove handler call back in here; without this the first stop would
@@ -538,6 +592,12 @@ void IsoSession::stop()
 		return;
 	stopping_ = true;
 	for (auto &e : entries_) {
+		// A source that stayed pictureless for the whole session has no file and no
+		// recorder, so say so in the manifest rather than leaving it out silently.
+		if (!e.recorder && e.waitingForPicture) {
+			finished_.push_back({e.name, e.kind, "", "", std::nullopt, std::nullopt, Status::Failed,
+					     "the source never had a picture to record", e.label, gameFolder_});
+		}
 		closeEntry(e, Status::Complete);
 		if (e.source)
 			obs_source_release(e.source);
@@ -553,6 +613,7 @@ void IsoSession::stop()
 		info_.duration = (double)(os_gettime_ns() - epochNs_) / 1e9;
 		rewriteManifest();
 		active_ = false;
+		canResume_ = canResume;
 	}
 	// Reset per-session numbering only now, after the final manifest is written
 	// and the live entries are gone, so a later session's pre-arm cannot inherit
@@ -608,10 +669,34 @@ bool IsoSession::newGame(std::string *error)
 	return ok;
 }
 
+void IsoSession::retryWaiting()
+{
+	if (!active_) {
+		return;
+	}
+	bool started = false;
+	for (auto &e : entries_) {
+		if (!e.waitingForPicture || e.recorder) {
+			continue;
+		}
+		if (obs_source_get_width(e.source) == 0 || obs_source_get_height(e.source) == 0) {
+			continue;
+		}
+		if (startEntry(e, nullptr, false) && e.recorder) {
+			blog(LOG_INFO, "[iso-recorder] %s: a picture appeared, now recording", e.name.c_str());
+			started = true;
+		}
+	}
+	if (started) {
+		rewriteManifest();
+	}
+}
+
 std::string IsoSession::refreshManifest()
 {
 	if (!active_)
 		return {};
+	retryWaiting();
 	size_t failed = 0;
 	std::string message;
 	for (const auto &e : entries_) {
@@ -636,7 +721,7 @@ void IsoSession::onSourceRemoved(obs_source_t *source)
 {
 	if (stopping_)
 		return;
-	disarm(source);
+	removeEntry(source, Status::Aborted, "the source was deleted while it was recording");
 }
 
 void IsoSession::onSceneChanged(obs_source_t *scene)

@@ -71,9 +71,13 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   idle. Hover a row for its size, its file name, and the reason when something went
   wrong.
 - **Tick a source to record it live.** With a session running, ticking starts that
-  source's file immediately; unticking ends and finalizes it. With no session
+  source's file immediately; unticking ends and finalizes it, and that file is
+  `complete` — turning a source off is a decision, not a fault. With no session
   running, the tick is remembered and applies the moment one starts. A source added
   to the collection appears in the list on its own, and can be ticked mid-session.
+- **A capture with no picture yet waits instead of failing.** Tick your game capture
+  before the game is open and the row says it is waiting; the file starts by itself the
+  moment a picture appears, and its start time is written down. Nothing to press.
 - **Your ticks are remembered**, per scene collection, so you tick once and not
   again — they come back when you reopen OBS and again after you stop a recording.
   Untick everything and the slate is cleared: nothing is restored by itself. If
@@ -81,7 +85,10 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   the log warns and the dock says so, because otherwise the stream passes with no
   files at all.
 - **Record / Stop recording** starts or stops every ticked source at once, and a red
-  `● Recording · 0:12` line shows how long the session has been running. **Start and
+  `● Recording · 0:12` line shows how long the session has been running. Press Record
+  again after stopping and it carries on in the same folder, on the same clock, in the
+  next `NN_Game` folder — one session with a gap in it, not two folders your editor
+  cannot line up. **Start and
   stop with the stream** (on by default) does the same from the stream's own start
   and stop, so you never forget to press record. **Also record the live scene** (off
   by default) adds a reference recording of the program, written as `00_Session.mov`.

@@ -175,10 +175,13 @@ All create/start/stop happens on the OBS main thread, queued exactly as Source R
 - **Video:** the crash-tolerant hybrid MOV OBS's own recording uses (`mov_output` /
   `hybrid_mov`), so a hard crash leaves a playable file rather than a broken one. Extension `.mov`,
   codec H.264 by default.
-- **Audio:** `ffmpeg_muxer` with the `ffmpeg_pcm_s24le` encoder and a `.wav` extension, giving
-  true **WAV, 24-bit PCM at 48 kHz**. This encoder ships in OBS (verified against
-  `obs-ffmpeg-audio-encoders.c`), so no custom writer and no lossy fallback are needed. FLAC
-  (`ffmpeg_flac`) and AAC (`ffmpeg_aac`) are offered as alternatives; WAV is the default.
+- **Audio:** a sound-only source is written by `WavWriter` straight off its own private
+  `audio_output`, giving true **WAV, 24-bit PCM at 48 kHz** with no encoder in the way. Past
+  4 GiB the file is written as **RF64** instead: the header carries a 28-byte `ds64` chunk
+  (parked as `JUNK` while recording, so the sizes can be filled in at the end) and the `RIFF`
+  tag becomes `RF64`. A long stream therefore keeps recording past WAV's 4 GiB ceiling —
+  roughly 4 hours of a 24-bit stereo source — instead of failing there. Every editor that
+  reads BW64/RF64 opens it; the file stays a plain WAV below the ceiling.
 - **What gets a file:** a selected source is recorded as what it is. A source with a picture
   becomes a `.mov`, and any audio it carries is muxed into that same file. A source with only
   sound becomes a `.wav`. So the mic, the Discord tap and a desktop-audio source each get a
@@ -319,9 +322,14 @@ A Qt dock, registered with `obs_frontend_add_dock_by_id`. One window:
 
 A checkbox is an **arm**, not a setting that waits for the next session. Ticking it starts that
 source's file immediately when a session is running (and remembers the arm, without starting
-anything, when one is not). Unticking it ends and finalizes that file. The session's Record button
-starts or stops every armed source at once; the stream's own start and stop do the same when the
-toggle is on.
+anything, when one is not). Unticking it ends and finalizes that file, which is `complete` — turning
+a source off is a decision, not a fault. The session's Record button starts or stops every armed
+source at once; the stream's own start and stop do the same when the toggle is on.
+
+Stopping with the **Record button** leaves the session resumable: pressing Record again carries on
+in the same folder, on the same clock, in the next numbered game folder, so the editor gets one
+session with a gap rather than two folders that cannot be lined up. A stop that comes from the
+stream ending, or from OBS shutting down, ends the session for good.
 
 The dock holds arming and settings only. It asks `IsoSession` to arm, disarm, start or stop; it
 never touches an encoder. Arm state and settings persist in the plugin's own config section; the
@@ -334,7 +342,13 @@ running session does not.
 - **Stop:** `STREAMING_STOPPED`, the dock button, or `OBS_FRONTEND_EVENT_EXIT` (stop cleanly, write
   the manifest, then unload).
 - **Arming before start:** ticks made while no session is running are remembered and applied the
-  moment one starts.
+  moment one starts. This runs for as long as the session is idle, not once: the audio devices
+  exist before the scene collection has loaded, so a one-shot restore left every source in the
+  collection unticked for the whole stream.
+- **No picture yet:** a game or window capture has no picture until its app is up, which can be
+  long after the stream started. That is not a failure — the source stays armed, the row says it is
+  waiting, and its file starts the moment a picture appears, at its own offset. A source that never
+  gets one is written to the manifest as `failed` when the session ends.
 - **Arming mid-session:** ticking a source creates its recorder, starts its file at that moment, and
   records the offset from the epoch. Unticking stops and finalizes it. Arming, ending, then arming
   again produces a second file rather than reopening the first.

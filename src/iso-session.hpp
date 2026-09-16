@@ -43,7 +43,11 @@ public:
 	bool active() const { return active_; }
 	bool preflight(const SessionConfig &cfg, std::string *why);
 	bool start(const SessionConfig &cfg, std::string *error);
-	void stop();
+	// canResume belongs to the dock's Stop button: pressing Record again carries on in
+	// the same folder and on the same clock, in a new numbered game folder, so an
+	// editor gets one session rather than two that cannot be lined up. Every other
+	// stop — the stream ending, OBS shutting down — ends the session for good.
+	void stop(bool canResume = false);
 	// Close every running file and start a fresh numbered game folder, keeping the
 	// session and its clock. Returns false when no session is running.
 	bool newGame(std::string *error);
@@ -78,12 +82,18 @@ private:
 		Kind kind = Kind::Video;
 		int index = 1;
 		int segment = 1;
+		// A game or window capture has no picture until its app is up, which can be
+		// long after the stream started. The entry stays armed and keeps trying.
+		bool waitingForPicture = false;
 		std::unique_ptr<class SourceRecorder> recorder;
 	};
 	Entry *find(obs_source_t *source);
 	const Entry *find(obs_source_t *source) const;
 	bool startEntry(Entry &e, std::string *error, bool atSessionStart);
-	void closeEntry(Entry &e, Status okStatus);
+	// Start any armed source that finally has a picture. Called once a second.
+	void retryWaiting();
+	void removeEntry(obs_source_t *source, Status status, const std::string &reason);
+	void closeEntry(Entry &e, Status okStatus, const std::string &abortReason = {});
 	bool startComposite(std::string *error, bool atSessionStart);
 	void closeComposite();
 	std::string segmentDir() const;
@@ -110,6 +120,7 @@ private:
 	SessionInfo info_;
 	bool globalAudioHeld_ = false;
 	bool stopping_ = false;
+	bool canResume_ = false; // the last stop was the Stop button, so Record continues it
 };
 
 } // namespace iso
