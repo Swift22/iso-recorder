@@ -4,6 +4,7 @@
 
 #include "obs-events.h"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -21,6 +22,9 @@ public:
 	~SourceRecorder();
 
 	bool start(std::string *error);
+	// Writes packets from encoders that are already running, such as the stream's,
+	// so the recording adds no encode of its own.
+	bool startShared(obs_encoder_t *video, obs_encoder_t *audio, std::string *error);
 	void stop();
 	void setSource(obs_source_t *next);
 
@@ -30,7 +34,7 @@ public:
 	const std::string &sourceName() const { return name_; }
 	const std::string &path() const { return path_; }
 	const std::string &codec() const { return codec_; }
-	uint64_t startOffsetNs() const { return startOffsetNs_; }
+	uint64_t startOffsetNs() const;
 	double durationSeconds() const;
 	// Video packets the output actually delivered; final once stop() has run.
 	uint32_t totalFrames() const { return totalFrames_; }
@@ -40,6 +44,8 @@ public:
 private:
 	static void onPcm(void *param, size_t mixIdx, struct audio_data *data);
 	static void onOutputStopped(void *param, calldata_t *calldata);
+	static void onPacket(obs_output_t *output, struct encoder_packet *pkt, struct encoder_packet_time *pktTime,
+			     void *param);
 	static bool onAudioInput(void *param, uint64_t startTs, uint64_t endTs, uint64_t *newTs,
 				 uint32_t activeMixers, struct audio_output_data *mixes);
 	bool fillAudio(uint64_t startTs, uint64_t endTs, uint64_t *newTs, uint32_t activeMixers,
@@ -76,6 +82,9 @@ private:
 	obs_encoder_t *audioEnc_ = nullptr;
 	obs_output_t *output_ = nullptr;
 	bool outputStarted_ = false;
+	bool shared_ = false;
+	// A shared encoder is mid-stream, so the file begins at its next keyframe, not at start().
+	std::atomic<uint64_t> firstFrameNs_{0};
 	os_event_t *stopEvent_ = nullptr;
 
 	uint64_t startNs_ = 0;

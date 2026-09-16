@@ -1,7 +1,7 @@
 {
   "display_name": "ISO Recorder",
   "id": "io.github.swift22.iso-recorder",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "os_arch": "windows-x64, macos-arm64",
   "name": "iso-recorder",
   "description": "Records one file per source while you stream, independent of the composite program output.",

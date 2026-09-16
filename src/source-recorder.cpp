@@ -52,10 +52,22 @@ SourceRecorder::~SourceRecorder()
 
 double SourceRecorder::durationSeconds() const
 {
-	if (startNs_ == 0)
+	const uint64_t first = firstFrameNs_.load();
+	const uint64_t start = shared_ && first ? first : startNs_;
+	if (start == 0) {
 		return 0.0;
+	}
 	const uint64_t end = stopNs_ ? stopNs_ : os_gettime_ns();
-	return (double)(end - startNs_) / 1e9;
+	return end > start ? (double)(end - start) / 1e9 : 0.0;
+}
+
+uint64_t SourceRecorder::startOffsetNs() const
+{
+	const uint64_t first = firstFrameNs_.load();
+	if (shared_ && first) {
+		return first > epochNs_ ? first - epochNs_ : 0;
+	}
+	return startOffsetNs_;
 }
 
 void SourceRecorder::noteStart(uint64_t epochNs, bool atSessionStart)
@@ -186,7 +198,24 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 {
 	error_.clear();
 
-	videoEnc_ = obs_video_encoder_create(encoderId.c_str(), name_.c_str(), videoSettings_, nullptr);
+	// Every NVENC session on a card shares one encoder chip with the stream. The stream's
+	// quality settings (slow preset, two-pass, lookahead, B-frames) cost several plain
+	// encodes each, and copying them to every recording starved the stream of frames.
+	obs_data_t *encoderSettings = videoSettings_;
+	obs_data_t *light = nullptr;
+	if (encoderId.rfind("obs_nvenc", 0) == 0) {
+		const char *json = videoSettings_ ? obs_data_get_json(videoSettings_) : nullptr;
+		light = json ? obs_data_create_from_json(json) : obs_data_create();
+		obs_data_set_string(light, "preset", "p1");
+		obs_data_set_string(light, "multipass", "disabled");
+		obs_data_set_bool(light, "lookahead", false);
+		obs_data_set_int(light, "bf", 0);
+		encoderSettings = light;
+	}
+	videoEnc_ = obs_video_encoder_create(encoderId.c_str(), name_.c_str(), encoderSettings, nullptr);
+	if (light) {
+		obs_data_release(light);
+	}
 	if (!videoEnc_) {
 		error_ = "the encoder did not open";
 		return false;
@@ -236,6 +265,60 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 	os_event_init(&stopEvent_, OS_EVENT_TYPE_AUTO);
 	signal_handler_connect(obs_output_get_signal_handler(output_), "stop", onOutputStopped, this);
 	return true;
+}
+
+bool SourceRecorder::startShared(obs_encoder_t *video, obs_encoder_t *audio, std::string *error)
+{
+	auto fail = [&](std::string msg) {
+		failed_ = true;
+		error_ = msg;
+		if (error) {
+			*error = std::move(msg);
+		}
+		return false;
+	};
+
+	shared_ = true;
+	error_.clear();
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "path", path_.c_str());
+	output_ = obs_output_create("mov_output", name_.c_str(), settings, nullptr);
+	obs_data_release(settings);
+	if (!output_) {
+		return fail("the container did not open");
+	}
+	videoEnc_ = obs_encoder_get_ref(video);
+	audioEnc_ = obs_encoder_get_ref(audio);
+	obs_output_set_video_encoder(output_, videoEnc_);
+	obs_output_set_audio_encoder(output_, audioEnc_, 0);
+	obs_output_add_packet_callback(output_, onPacket, this);
+
+	if (!obs_output_start(output_)) {
+		const char *last = obs_output_get_last_error(output_);
+		std::string msg = last ? last : "";
+		if (msg.empty()) {
+			msg = "the output refused to start";
+		}
+		closeVideoPipeline();
+		return fail(std::move(msg));
+	}
+	started_ = true;
+	outputStarted_ = true;
+	os_event_init(&stopEvent_, OS_EVENT_TYPE_AUTO);
+	signal_handler_connect(obs_output_get_signal_handler(output_), "stop", onOutputStopped, this);
+	codec_ = codecForEncoderId(obs_encoder_get_id(video));
+	return true;
+}
+
+// Runs after the output has dropped everything before its first keyframe, so the first
+// video packet seen here is the first frame in the file.
+void SourceRecorder::onPacket(obs_output_t *, struct encoder_packet *pkt, struct encoder_packet_time *, void *param)
+{
+	auto *self = static_cast<SourceRecorder *>(param);
+	if (pkt->type != OBS_ENCODER_VIDEO || self->firstFrameNs_.load() != 0) {
+		return;
+	}
+	self->firstFrameNs_.store((uint64_t)pkt->sys_dts_usec * 1000ull);
 }
 
 void SourceRecorder::closeVideoPipeline()
@@ -307,6 +390,9 @@ void SourceRecorder::stop()
 						  onOutputStopped, this);
 		}
 		totalFrames_ = (uint32_t)obs_output_get_total_frames(output_);
+		if (shared_) {
+			obs_output_remove_packet_callback(output_, onPacket, this);
+		}
 		obs_output_release(output_);
 		output_ = nullptr;
 	}

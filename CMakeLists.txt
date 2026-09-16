@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(iso-recorder VERSION 0.4.0 LANGUAGES C CXX)
+project(iso-recorder VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(OBS_SRC "" CACHE PATH "Path to an obs-studio source checkout (headers)")
 set(OBS_APP "" CACHE PATH "Path to the installed OBS.app (macOS)")

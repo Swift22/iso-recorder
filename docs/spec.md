@@ -229,6 +229,16 @@ exception to "bound to one source": it follows the current program scene, re-poi
 switch, and is written as `00_Session.mov`. A scene switch can cost it a frame; that is acceptable
 for a reference file and is why it is off by default.
 
+While a stream is live, `00_Session.mov` takes the stream's own encoded packets instead of encoding
+the scene again, so it costs no extra encode and is exactly what viewers received. It begins at the
+stream's next keyframe, and its start offset is that frame's time. Without a stream it encodes
+itself, as above.
+
+Every recording that encodes on NVENC uses light settings (preset P1, no multipass, no lookahead, no
+B-frames) at the stream's bitrate, whatever the stream uses. The stream and the recordings share one
+encoder chip, and the stream's quality settings copied to three or four full-canvas recordings
+starved the stream itself (measured on a viewer's RTX 4070 SUPER: 16% of stream frames skipped).
+
 ### `session.json`
 
 ```json

@@ -387,8 +387,24 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 						      videoSettings_, audioSettings_, config_.capWidth,
 						      config_.capHeight, Kind::Video, audioCodec_);
 	obs_source_release(scene);
+	// The live scene is the picture the stream is already encoding, and a second
+	// full-canvas encode on the same GPU is what starves the stream. Take the
+	// stream's packets while it is live; encode separately only without a stream.
+	obs_output_t *stream = obs_frontend_get_streaming_output();
+	obs_encoder_t *streamVideo = nullptr;
+	obs_encoder_t *streamAudio = nullptr;
+	if (stream && obs_output_active(stream)) {
+		streamVideo = obs_output_get_video_encoder(stream);
+		streamAudio = obs_output_get_audio_encoder(stream, 0);
+	}
+	const bool share = streamVideo && streamAudio && obs_encoder_active(streamVideo) &&
+			   obs_encoder_active(streamAudio);
 	std::string err;
-	if (!composite_->start(&err)) {
+	const bool started = share ? composite_->startShared(streamVideo, streamAudio, &err) : composite_->start(&err);
+	if (stream) {
+		obs_output_release(stream);
+	}
+	if (!started) {
 		finished_.push_back({"Session", Kind::Video, "", "", std::nullopt, std::nullopt,
 				     Status::Failed, err, labelFor("Session", Kind::Video),
 				     gameFolder_});

@@ -1,0 +1,10 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  performance-*,
+  -performance-enum-size
+HeaderFilterRegex: '^.*/src/.*'
+WarningsAsErrors: ''
