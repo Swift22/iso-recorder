@@ -16,8 +16,10 @@ namespace iso {
 
 class SourceRecorder {
 public:
+	// frameRateDivisor is 1 for full rate or 2 for half; a shared encoder ignores it.
 	SourceRecorder(obs_source_t *source, std::string name, std::string path, std::string videoEncoderId,
-		       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight);
+		       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight,
+		       uint32_t frameRateDivisor);
 	~SourceRecorder();
 
 	bool start(std::string *error);
@@ -25,6 +27,9 @@ public:
 	// so the recording adds no encode of its own.
 	bool startShared(obs_encoder_t *video, obs_encoder_t *audio, std::string *error);
 	void stop();
+	// Pausing the output keeps the file open; the time spent paused is left out of duration.
+	// A WAV (audio-only) file drops its samples instead.
+	bool setPaused(bool paused, std::string *error);
 	void setSource(obs_source_t *next);
 	// The source no longer matches the size its private view was built for, so the
 	// picture is being cropped or padded.
@@ -44,6 +49,7 @@ public:
 	double durationSeconds() const;
 	// Video packets the output actually delivered; final once stop() has run.
 	uint32_t totalFrames() const { return totalFrames_; }
+	uint32_t frameRateDivisor() const { return divisor_; }
 
 	void noteStart(uint64_t epochNs, bool atSessionStart = false);
 
@@ -62,7 +68,7 @@ private:
 	void setError(std::string msg);
 	bool fail(std::string msg, std::string *error);
 	bool openAudio(uint32_t samplesPerSec);
-	bool openVideoPipeline(const std::string &encoderId);
+	bool openVideoPipeline(const std::string &encoderId, const char *outputId);
 	void closeVideoPipeline();
 	bool isComposite() const
 	{
@@ -80,6 +86,7 @@ private:
 	obs_data_t *audioSettings_ = nullptr; // owned copy
 	uint32_t capWidth_ = 0;               // recording-size cap; 0 means the source's own size
 	uint32_t capHeight_ = 0;
+	uint32_t divisor_ = 1;   // drops to 1 if the encoder refused the divisor, so the file is judged at full rate
 	uint32_t baseWidth_ = 0; // the even-rounded source size the view was built for
 	uint32_t baseHeight_ = 0;
 
@@ -102,6 +109,10 @@ private:
 	uint64_t epochNs_ = 0;
 	uint64_t startOffsetNs_ = 0;
 	uint32_t totalFrames_ = 0;
+	// Written from the OBS thread that drops PCM, so atomic like started_.
+	std::atomic<bool> paused_{false};
+	uint64_t pauseStartNs_ = 0; // only meaningful while paused_
+	uint64_t pausedNs_ = 0;     // time paused before the current pause, summed
 	std::atomic<bool> started_{false};
 	std::atomic<bool> failed_{false};
 	bool showingInced_ = false;

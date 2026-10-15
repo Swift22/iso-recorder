@@ -14,5 +14,8 @@ void saveConfig(const SessionConfig &cfg);
 // start comes up with the same set. A name that no longer exists is skipped.
 std::vector<std::string> loadArmedSources(const std::string &collection);
 void saveArmedSources(const std::string &collection, const std::vector<std::string> &names);
+// The sources set to record at half frame rate, remembered the same way.
+std::vector<std::string> loadHalfRateSources(const std::string &collection);
+void saveHalfRateSources(const std::string &collection, const std::vector<std::string> &names);
 
 } // namespace iso

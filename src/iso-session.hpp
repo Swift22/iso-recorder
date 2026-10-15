@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +22,10 @@ constexpr size_t kEncoderWarnThreshold = 3;
 // What a source's row says at a glance, so the list is readable without hovering.
 enum class RowState { Idle, WillRecord, Recording, Failed, Aborted };
 
+// Which control started the session: the dock's Record button, the stream, or OBS's own
+// Record button. Only a session OBS's Record started follows OBS's pause and stop.
+enum class StartedBy { Dock, Stream, Record };
+
 struct SessionConfig {
 	std::string basePath;
 	std::string videoEncoderId;
@@ -32,6 +37,7 @@ struct SessionConfig {
 	uint64_t bitrateBitsPerSec = 6000ull * 1000ull; // drives the disk check in Task 9
 	bool recordComposite = false;
 	bool withStream = true;
+	bool withRecording = true;
 };
 
 class IsoSession {
@@ -43,7 +49,8 @@ public:
 	bool preflight(const SessionConfig &cfg, std::string *why);
 	bool start(const SessionConfig &cfg, std::string *error);
 	// Preflight and start from the current config; returns the status line for the dock.
-	std::string startWithReport();
+	std::string startWithReport(StartedBy by = StartedBy::Dock);
+	StartedBy startedBy() const { return startedBy_; }
 	// canResume belongs to the dock's Stop button: pressing Record again carries on in
 	// the same folder and on the same clock, in a new numbered game folder, so an
 	// editor gets one session rather than two that cannot be lined up. Every other
@@ -52,6 +59,14 @@ public:
 	// Close every running file and start a fresh numbered game folder, keeping the
 	// session and its clock. Returns false when no session is running.
 	bool newGame(std::string *error);
+	// Pause or resume every running file. A file that would not pause is named in
+	// *error and the rest carry on.
+	bool setPaused(bool paused, std::string *error);
+	bool paused() const { return paused_; }
+	// A half-rate source records every other frame, from its next file on.
+	void setHalfRate(obs_source_t *source, bool half);
+	void setHalfRateNames(const std::vector<std::string> &names) { halfRate_ = {names.begin(), names.end()}; }
+	bool isHalfRate(obs_source_t *source) const;
 	// Returns the newest failure message when a recorder died since the last call,
 	// empty otherwise; the dock puts it on screen.
 	std::string refreshManifest();
@@ -109,6 +124,10 @@ private:
 	bool openNextGameFolder(std::string *error);
 	std::string segmentDir() const;
 	double offsetFor(Kind kind, uint64_t offsetNs) const;
+	// Paused time between the session's epoch and wallNs, which is off the timeline.
+	uint64_t pausedBefore(uint64_t wallNs) const;
+	// The codec the entries record with: the stream's encoder when the session was given one.
+	std::string videoCodec() const;
 	void rewriteManifest();
 
 	bool active_ = false;
@@ -119,6 +138,7 @@ private:
 	size_t failedSeen_ = 0;
 	std::vector<Entry> entries_;
 	std::unique_ptr<class SourceRecorder> composite_;
+	std::string compositeFile_; // "00_Session.mov" or ".mp4", set when the composite starts
 	std::vector<Recording> finished_;
 	std::map<std::pair<std::string, Kind>, int> segmentCount_;
 	std::map<std::pair<std::string, Kind>, int> indexFor_;
@@ -129,6 +149,14 @@ private:
 	SessionInfo info_;
 	bool globalAudioHeld_ = false;
 	bool canResume_ = false; // the last stop was the Stop button, so Record continues it
+	StartedBy startedBy_ = StartedBy::Dock;
+	bool paused_ = false;
+	struct PauseSpan {
+		uint64_t start = 0;
+		uint64_t end = 0; // 0 while the session is still paused
+	};
+	std::vector<PauseSpan> pauses_;  // since the epoch, so a file started later lines up
+	std::set<std::string> halfRate_; // source names, remembered by the dock per collection
 };
 
 } // namespace iso

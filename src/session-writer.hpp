@@ -42,11 +42,17 @@ struct SessionInfo {
 
 const char *kindName(Kind kind);
 const char *statusName(Status status);
-const char *extensionFor(Kind kind);
+// The OBS output a codec is written through, and the extension its file gets.
+struct Container {
+	const char *outputId;
+	const char *extension;
+};
+Container containerFor(const std::string &codec);
+const char *extensionFor(Kind kind, const std::string &codec);
 std::string codecForEncoderId(const std::string &id);
 
 std::string sanitizeName(const std::string &source);
-std::string makeFilename(Kind kind, int index, const std::string &source, int segment);
+std::string makeFilename(Kind kind, int index, const std::string &source, int segment, const std::string &codec);
 std::string formatClock(double seconds);
 std::string formatSeconds(double seconds);
 

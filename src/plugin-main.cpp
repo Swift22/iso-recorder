@@ -31,16 +31,51 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 				g_dock->setStatus(QStringLiteral(
 					"The stream started with nothing ticked, so nothing is being recorded."));
 			} else {
-				g_dock->setStatus(QString::fromStdString(g_session->startWithReport()));
+				g_dock->setStatus(
+					QString::fromStdString(g_session->startWithReport(iso::StartedBy::Stream)));
 			}
 		}
 		g_dock->refreshSources();
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
-		if (g_session->active())
+		// A session OBS's Record button started ends with that button, not with the stream.
+		if (g_session->active() && g_session->startedBy() != iso::StartedBy::Record) {
 			g_session->stop();
+		}
 		g_dock->refreshSources();
 		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
+		g_dock->refreshSessionConfig();
+		if (g_session->config().withRecording && !g_session->active()) {
+			if (!g_session->isArmedAny()) {
+				blog(LOG_WARNING,
+				     "[iso-recorder] OBS started recording with no sources ticked, so nothing was recorded");
+				g_dock->setStatus(QStringLiteral(
+					"OBS started recording with nothing ticked, so nothing is being recorded."));
+			} else {
+				g_dock->setStatus(
+					QString::fromStdString(g_session->startWithReport(iso::StartedBy::Record)));
+			}
+		}
+		g_dock->refreshSources();
+		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
+		if (g_session->active() && g_session->startedBy() == iso::StartedBy::Record) {
+			g_session->stop();
+		}
+		g_dock->refreshSources();
+		break;
+	case OBS_FRONTEND_EVENT_RECORDING_PAUSED:
+	case OBS_FRONTEND_EVENT_RECORDING_UNPAUSED: {
+		if (g_session->active() && g_session->startedBy() == iso::StartedBy::Record) {
+			std::string err;
+			if (!g_session->setPaused(event == OBS_FRONTEND_EVENT_RECORDING_PAUSED, &err)) {
+				g_dock->setStatus(QString::fromStdString(err));
+			}
+		}
+		g_dock->refreshSources();
+		break;
+	}
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED: {
 		obs_source_t *scene = obs_frontend_get_current_scene();
 		g_session->onSceneChanged(scene);

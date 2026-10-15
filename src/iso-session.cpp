@@ -12,6 +12,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -26,13 +27,8 @@ namespace iso {
 // itself is ignored here; the recorders each read their own source.
 static void onGlobalAudioKeepalive(void *, size_t, struct audio_data *) {}
 
-// The live-scene recording's name in the manifest and its file, 00_Session.mov.
+// The live-scene recording's name in the manifest; its file is 00_Session.mov or .mp4.
 static constexpr const char *kSessionName = "Session";
-
-static std::string sessionFile()
-{
-	return makeFilename(Kind::Video, 0, kSessionName, 1);
-}
 
 static std::tm localTime(std::time_t t)
 {
@@ -231,7 +227,7 @@ std::string IsoSession::statusFor(obs_source_t *source) const
 	if (e && e->recorder) {
 		if (e->recorder->failed())
 			return e->recorder->error();
-		return makeFilename(e->kind, e->index, e->name, e->segment);
+		return makeFilename(e->kind, e->index, e->name, e->segment, videoCodec());
 	}
 	if (e && e->waitingForPicture) {
 		return "waiting for a picture — it will record as soon as one appears";
@@ -266,7 +262,29 @@ RowState IsoSession::rowStateFor(obs_source_t *source) const
 
 double IsoSession::elapsedSeconds() const
 {
-	return active_ ? (double)(os_gettime_ns() - epochNs_) / 1e9 : 0.0;
+	if (!active_) {
+		return 0.0;
+	}
+	const uint64_t now = os_gettime_ns();
+	return (double)(now - epochNs_ - pausedBefore(now)) / 1e9;
+}
+
+uint64_t IsoSession::pausedBefore(uint64_t wallNs) const
+{
+	uint64_t total = 0;
+	for (const PauseSpan &span : pauses_) {
+		const uint64_t end = span.end ? span.end : wallNs;
+		const uint64_t until = std::min(end, wallNs);
+		if (until > span.start) {
+			total += until - span.start;
+		}
+	}
+	return total;
+}
+
+std::string IsoSession::videoCodec() const
+{
+	return codecForEncoderId(config_.videoEncoderId);
 }
 
 static uint64_t freeBytes(const std::string &path)
@@ -327,7 +345,10 @@ void IsoSession::setConfig(const SessionConfig &cfg)
 
 double IsoSession::offsetFor(Kind kind, uint64_t offsetNs) const
 {
-	double offset = (double)offsetNs / 1e9;
+	// A file that starts after a pause sits further along the timeline by the time it
+	// was paused, not by the wall clock.
+	const uint64_t timeline = offsetNs - std::min(offsetNs, pausedBefore(epochNs_ + offsetNs));
+	double offset = (double)timeline / 1e9;
 	if (kind == Kind::Video && info_.video.fps > 0.0)
 		offset = (double)std::llround(offset * info_.video.fps) / info_.video.fps;
 	return offset;
@@ -394,7 +415,7 @@ void IsoSession::finishRecorder(SourceRecorder &rec, const std::string &name, Ki
 	}
 	uint64_t missing = 0;
 	if (!failed && okStatus == Status::Complete && kind == Kind::Video &&
-	    frameShortfall(rec.totalFrames(), duration, info_.video.fps, &missing)) {
+	    frameShortfall(rec.totalFrames(), duration, info_.video.fps / rec.frameRateDivisor(), &missing)) {
 		status = Status::Aborted;
 		reason = shortfallReason(missing);
 		blog(LOG_WARNING, "[iso-recorder] %s: %s", name.c_str(), reason.c_str());
@@ -433,8 +454,8 @@ void IsoSession::closeEntry(Entry &e, Status okStatus, const std::string &abortR
 {
 	if (!e.recorder)
 		return;
-	finishRecorder(*e.recorder, e.name, e.kind, makeFilename(e.kind, e.index, e.name, e.segment), e.label, okStatus,
-		       abortReason);
+	finishRecorder(*e.recorder, e.name, e.kind, makeFilename(e.kind, e.index, e.name, e.segment, videoCodec()),
+		       e.label, okStatus, abortReason);
 	e.recorder.reset();
 }
 
@@ -448,10 +469,6 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 		     "[iso-recorder] the live scene is not ready; not recording 00_Session.mov");
 		return false;
 	}
-	composite_ = std::make_unique<SourceRecorder>(scene, kSessionName, segmentDir() + "/" + sessionFile(),
-						      config_.videoEncoderId, videoSettings_, audioSettings_,
-						      config_.capWidth, config_.capHeight);
-	obs_source_release(scene);
 	// The live scene is the picture the stream is already encoding, and a second
 	// full-canvas encode on the same GPU is what starves the stream. Take the
 	// stream's packets while it is live; encode separately only without a stream.
@@ -464,6 +481,13 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 	}
 	const bool share = streamVideo && streamAudio && obs_encoder_active(streamVideo) &&
 			   obs_encoder_active(streamAudio);
+	// A shared composite is written in the stream's codec, so its file takes that container.
+	const std::string codec = share ? codecForEncoderId(obs_encoder_get_id(streamVideo)) : videoCodec();
+	compositeFile_ = makeFilename(Kind::Video, 0, kSessionName, 1, codec);
+	composite_ = std::make_unique<SourceRecorder>(scene, kSessionName, segmentDir() + "/" + compositeFile_,
+						      config_.videoEncoderId, videoSettings_, audioSettings_,
+						      config_.capWidth, config_.capHeight, 1);
+	obs_source_release(scene);
 	std::string err;
 	const bool started = share ? composite_->startShared(streamVideo, streamAudio, &err) : composite_->start(&err);
 	if (stream) {
@@ -485,7 +509,7 @@ void IsoSession::closeComposite()
 {
 	if (!composite_)
 		return;
-	finishRecorder(*composite_, kSessionName, Kind::Video, sessionFile(), labelFor(kSessionName, Kind::Video),
+	finishRecorder(*composite_, kSessionName, Kind::Video, compositeFile_, labelFor(kSessionName, Kind::Video),
 		       Status::Complete);
 	composite_.reset();
 }
@@ -503,10 +527,11 @@ bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 		return true;
 	}
 	e.waitingForPicture = false;
-	const std::string file = makeFilename(e.kind, e.index, e.name, e.segment);
+	const std::string file = makeFilename(e.kind, e.index, e.name, e.segment, videoCodec());
 	const std::string path = segmentDir() + "/" + file;
+	const uint32_t divisor = isHalfRate(e.source) ? 2u : 1u;
 	e.recorder = std::make_unique<SourceRecorder>(e.source, e.name, path, config_.videoEncoderId, videoSettings_,
-						      audioSettings_, config_.capWidth, config_.capHeight);
+						      audioSettings_, config_.capWidth, config_.capHeight, divisor);
 	std::string err;
 	if (!e.recorder->start(&err)) {
 		recordFailure(e.name, e.kind, e.label, err);
@@ -519,6 +544,17 @@ bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 		return false;
 	}
 	e.recorder->noteStart(epochNs_, atSessionStart);
+	// A source ticked during a pause starts paused, so it has nothing on the timeline
+	// until the session resumes.
+	if (paused_) {
+		std::string pauseErr;
+		if (!e.recorder->setPaused(true, &pauseErr)) {
+			blog(LOG_WARNING, "[iso-recorder] %s: %s", e.name.c_str(), pauseErr.c_str());
+			if (error && error->empty()) {
+				*error = e.name + ": " + pauseErr;
+			}
+		}
+	}
 	return true;
 }
 
@@ -573,7 +609,9 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 			info_.video.fps = (double)ovi.fps_num / (double)ovi.fps_den;
 		}
 		finished_.clear();
+		pauses_.clear();
 	}
+	paused_ = false;
 	failedSeen_ = 0;
 	// Numbering counters are NOT reset here: sources may have been armed while
 	// the session was inactive, and their arm() already assigned index/segment.
@@ -590,13 +628,14 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 	return ok;
 }
 
-std::string IsoSession::startWithReport()
+std::string IsoSession::startWithReport(StartedBy by)
 {
 	const SessionConfig cfg = config_; // a copy: start() assigns config_ from it
 	std::string why;
 	if (!preflight(cfg, &why)) {
 		return why;
 	}
+	startedBy_ = by;
 	std::string err;
 	if (!start(cfg, &err)) {
 		return active_ ? "Recording, but some sources failed: " + err : err;
@@ -609,6 +648,11 @@ std::string IsoSession::startWithReport()
 
 void IsoSession::stop(bool canResume)
 {
+	// A pause ends before the files close, so each one's clock stops on the timeline.
+	if (paused_) {
+		std::string ignored; // setPaused() has already warned about any file that would not resume
+		setPaused(false, &ignored);
+	}
 	for (auto &e : entries_) {
 		// A source that stayed pictureless for the whole session has no file and no
 		// recorder, so say so in the manifest rather than leaving it out silently.
@@ -626,8 +670,9 @@ void IsoSession::stop(bool canResume)
 		globalAudioHeld_ = false;
 	}
 	if (active_) {
+		const uint64_t now = os_gettime_ns();
 		info_.ended = isoNow();
-		info_.duration = (double)(os_gettime_ns() - epochNs_) / 1e9;
+		info_.duration = (double)(now - epochNs_ - pausedBefore(now)) / 1e9;
 		rewriteManifest();
 		active_ = false;
 		canResume_ = canResume;
@@ -668,6 +713,12 @@ bool IsoSession::newGame(std::string *error)
 		error->clear();
 	if (!active_)
 		return false;
+	if (paused_) {
+		if (error) {
+			*error = "Recording is paused.";
+		}
+		return false;
+	}
 	for (auto &e : entries_)
 		closeEntry(e, Status::Complete);
 	closeComposite();
@@ -744,8 +795,11 @@ std::string IsoSession::refreshManifest()
 	dropRemovedSources();
 	if (!active_)
 		return {};
-	retryWaiting();
-	restartResized();
+	// A paused session starts no files and closes none for size, so the pause stays clean.
+	if (!paused_) {
+		retryWaiting();
+		restartResized();
+	}
 	size_t failed = 0;
 	std::string message;
 	for (const auto &e : entries_) {
@@ -785,6 +839,60 @@ void IsoSession::onSceneChanged(obs_source_t *scene)
 		composite_->setSource(scene);
 }
 
+bool IsoSession::setPaused(bool paused, std::string *error)
+{
+	if (error) {
+		error->clear();
+	}
+	if (!active_ || paused == paused_) {
+		return true;
+	}
+	const uint64_t now = os_gettime_ns();
+	if (paused) {
+		pauses_.push_back({now, 0});
+	} else {
+		pauses_.back().end = now;
+	}
+	paused_ = paused;
+	bool ok = true;
+	auto apply = [&](SourceRecorder &rec, const std::string &label) {
+		std::string err;
+		if (rec.setPaused(paused, &err)) {
+			return;
+		}
+		ok = false;
+		blog(LOG_WARNING, "[iso-recorder] %s: %s", label.c_str(), err.c_str());
+		if (error && error->empty()) {
+			*error = std::string(paused ? "Could not pause " : "Could not resume ") + label + ": " + err +
+				 ".";
+		}
+	};
+	for (auto &e : entries_) {
+		if (e.recorder) {
+			apply(*e.recorder, e.label);
+		}
+	}
+	if (composite_) {
+		apply(*composite_, labelFor(kSessionName, Kind::Video));
+	}
+	return ok;
+}
+
+void IsoSession::setHalfRate(obs_source_t *source, bool half)
+{
+	const std::string name = obs_source_get_name(source);
+	if (half) {
+		halfRate_.insert(name);
+	} else {
+		halfRate_.erase(name);
+	}
+}
+
+bool IsoSession::isHalfRate(obs_source_t *source) const
+{
+	return halfRate_.count(obs_source_get_name(source)) != 0;
+}
+
 void IsoSession::rewriteManifest()
 {
 	if (!active_)
@@ -793,11 +901,12 @@ void IsoSession::rewriteManifest()
 	for (const auto &e : entries_) {
 		if (e.recorder) { // failed entries were appended to finished_ already
 			all.push_back(liveRecording(*e.recorder, e.name, e.kind,
-						    makeFilename(e.kind, e.index, e.name, e.segment), e.label));
+						    makeFilename(e.kind, e.index, e.name, e.segment, videoCodec()),
+						    e.label));
 		}
 	}
 	if (composite_ && (composite_->active() || composite_->failed())) {
-		all.push_back(liveRecording(*composite_, kSessionName, Kind::Video, sessionFile(),
+		all.push_back(liveRecording(*composite_, kSessionName, Kind::Video, compositeFile_,
 					    labelFor(kSessionName, Kind::Video)));
 	}
 	writeFile(folder_ + "/session.json", buildSessionJson(info_, all));

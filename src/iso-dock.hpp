@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPoint>
 #include <QWidget>
 
 #include <vector>
@@ -35,6 +36,7 @@ private slots:
 	void onItemChanged(QListWidgetItem *item);
 	void onBrowse();
 	void onTick();
+	void onPictureMenu(const QPoint &pos);
 
 private:
 	void addSource(QListWidget *list, obs_source_t *source, Kind kind);
@@ -42,6 +44,7 @@ private:
 	void restoreArms(const std::vector<obs_source_t *> &pictureSources,
 			 const std::vector<obs_source_t *> &soundSources);
 	void rememberArmed(const std::string &name, bool armed);
+	void rememberHalfRate(const std::string &name, bool half);
 	SessionConfig configFromWidgets() const;
 	SessionConfig resolveConfig(SessionConfig cfg, obs_data_t **videoSettings,
 				    obs_data_t **audioSettings) const;
@@ -57,6 +60,7 @@ private:
 	QComboBox *encoder_ = nullptr;
 	QComboBox *size_ = nullptr;
 	QCheckBox *withStream_ = nullptr;
+	QCheckBox *withRecording_ = nullptr;
 	QCheckBox *recordScene_ = nullptr;
 	QPushButton *record_ = nullptr;
 	QPushButton *newGame_ = nullptr;
@@ -68,6 +72,7 @@ private:
 	std::vector<obs_source_t *> lastSound_;
 	std::vector<std::string> armed_; // the ticked set, remembered per collection
 	std::string armedCollection_;
+	std::vector<std::string> halfRate_;     // the half-frame-rate set, remembered per collection
 	obs_data_t *encoderSettings_ = nullptr; // the stream's settings, owned
 	obs_data_t *audioSettings_ = nullptr;   // the stream's settings, owned
 	std::vector<std::string> spoutWarned_;

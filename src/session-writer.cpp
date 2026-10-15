@@ -19,7 +19,19 @@ const char *statusName(Status status)
 	return "recording";
 }
 
-const char *extensionFor(Kind kind) { return kind == Kind::Audio ? "wav" : "mov"; }
+// mov_output only takes h264, hevc and prores; AV1 needs the hybrid MP4 output.
+Container containerFor(const std::string &codec)
+{
+	if (codec == "av1") {
+		return {"mp4_output", "mp4"};
+	}
+	return {"mov_output", "mov"};
+}
+
+const char *extensionFor(Kind kind, const std::string &codec)
+{
+	return kind == Kind::Audio ? "wav" : containerFor(codec).extension;
+}
 
 std::string codecForEncoderId(const std::string &id)
 {
@@ -55,7 +67,7 @@ std::string sanitizeName(const std::string &source)
 	return out.empty() ? "source" : out;
 }
 
-std::string makeFilename(Kind kind, int index, const std::string &source, int segment)
+std::string makeFilename(Kind kind, int index, const std::string &source, int segment, const std::string &codec)
 {
 	char num[8];
 	std::snprintf(num, sizeof num, "%02d", index);
@@ -63,7 +75,7 @@ std::string makeFilename(Kind kind, int index, const std::string &source, int se
 	if (segment > 1)
 		name += "_" + std::to_string(segment);
 	name += ".";
-	name += extensionFor(kind);
+	name += extensionFor(kind, codec);
 	return name;
 }
 

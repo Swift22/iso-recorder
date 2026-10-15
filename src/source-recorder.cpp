@@ -25,13 +25,14 @@ static obs_data_t *cloneData(obs_data_t *src)
 
 SourceRecorder::SourceRecorder(obs_source_t *source, std::string name, std::string path, std::string videoEncoderId,
 			       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth,
-			       uint32_t capHeight)
+			       uint32_t capHeight, uint32_t frameRateDivisor)
 	: source_(obs_source_get_ref(source)),
 	  name_(std::move(name)),
 	  path_(std::move(path)),
 	  videoEncoderId_(std::move(videoEncoderId)),
 	  capWidth_(capWidth),
-	  capHeight_(capHeight)
+	  capHeight_(capHeight),
+	  divisor_(frameRateDivisor)
 {
 	const uint32_t flags = obs_source_get_output_flags(source_);
 	hasVideo_ = (flags & OBS_SOURCE_VIDEO) != 0;
@@ -60,7 +61,42 @@ double SourceRecorder::durationSeconds() const
 	}
 	const uint64_t stopped = stopNs_.load();
 	const uint64_t end = stopped ? stopped : os_gettime_ns();
-	return end > start ? (double)(end - start) / 1e9 : 0.0;
+	if (end <= start) {
+		return 0.0;
+	}
+	const uint64_t paused = pausedNs_ + (paused_ ? end - pauseStartNs_ : 0);
+	return paused < end - start ? (double)(end - start - paused) / 1e9 : 0.0;
+}
+
+bool SourceRecorder::setPaused(bool paused, std::string *error)
+{
+	if (paused == paused_ || !started_) {
+		return true;
+	}
+	// OBS pauses at the encoder, and a shared recorder's encoders are the live stream's:
+	// pausing this file would freeze the stream. It keeps recording through the pause.
+	if (shared_) {
+		if (paused) {
+			blog(LOG_INFO,
+			     "[iso-recorder] %s: shares the stream's encoder, so it records through the pause",
+			     name_.c_str());
+		}
+		return true;
+	}
+	if (output_ && !obs_output_pause(output_, paused)) {
+		if (error) {
+			*error = "the recording would not pause";
+		}
+		return false;
+	}
+	const uint64_t now = os_gettime_ns();
+	if (paused) {
+		pauseStartNs_ = now;
+	} else {
+		pausedNs_ += now - pauseStartNs_;
+	}
+	paused_ = paused;
+	return true;
 }
 
 uint64_t SourceRecorder::startOffsetNs() const
@@ -188,14 +224,17 @@ bool SourceRecorder::start(std::string *error)
 	obs_source_inc_showing(source_);
 	showingInced_ = true;
 
-	if (!openVideoPipeline(videoEncoderId_)) {
+	// The file's name is fixed before the encoder opens, so the container follows the
+	// requested codec even when the x264 fallback writes into it.
+	const Container box = containerFor(codecForEncoderId(videoEncoderId_));
+	if (!openVideoPipeline(videoEncoderId_, box.outputId)) {
 		// A hardware encoder can refuse a source it cannot handle — most often
 		// because the picture is smaller than its minimum frame size, which a
 		// small avatar or overlay source easily is. The software encoder has no
 		// such floor, so give the source one more chance before failing it.
 		const std::string first = this->error();
 		closeVideoPipeline();
-		if (videoEncoderId_ != "obs_x264" && openVideoPipeline("obs_x264")) {
+		if (videoEncoderId_ != "obs_x264" && openVideoPipeline("obs_x264", box.outputId)) {
 			blog(LOG_WARNING,
 			     "[iso-recorder] %s: the %s encoder would not take this source (%s); recording it with obs_x264 instead",
 			     name_.c_str(), videoEncoderId_.c_str(), first.c_str());
@@ -213,7 +252,7 @@ bool SourceRecorder::start(std::string *error)
 	return true;
 }
 
-bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
+bool SourceRecorder::openVideoPipeline(const std::string &encoderId, const char *outputId)
 {
 	setError({});
 
@@ -238,11 +277,17 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 		setError("the encoder did not open");
 		return false;
 	}
+	if (divisor_ > 1 && !obs_encoder_set_frame_rate_divisor(videoEnc_, divisor_)) {
+		blog(LOG_WARNING,
+		     "[iso-recorder] %s: the %s encoder would not record at half frame rate; recording at full rate",
+		     name_.c_str(), encoderId.c_str());
+		divisor_ = 1;
+	}
 	obs_encoder_set_video(videoEnc_, video_);
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "path", path_.c_str());
-	output_ = obs_output_create("mov_output", name_.c_str(), settings, nullptr);
+	output_ = obs_output_create(outputId, name_.c_str(), settings, nullptr);
 	obs_data_release(settings);
 	if (!output_) {
 		setError("the container did not open");
@@ -280,9 +325,10 @@ bool SourceRecorder::startShared(obs_encoder_t *video, obs_encoder_t *audio, std
 {
 	shared_ = true;
 	setError({});
+	const std::string codec = codecForEncoderId(obs_encoder_get_id(video));
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "path", path_.c_str());
-	output_ = obs_output_create("mov_output", name_.c_str(), settings, nullptr);
+	output_ = obs_output_create(containerFor(codec).outputId, name_.c_str(), settings, nullptr);
 	obs_data_release(settings);
 	if (!output_) {
 		return fail("the container did not open", error);
@@ -306,7 +352,7 @@ bool SourceRecorder::startShared(obs_encoder_t *video, obs_encoder_t *audio, std
 	outputStarted_ = true;
 	os_event_init(&stopEvent_, OS_EVENT_TYPE_AUTO);
 	signal_handler_connect(obs_output_get_signal_handler(output_), "stop", onOutputStopped, this);
-	codec_ = codecForEncoderId(obs_encoder_get_id(video));
+	codec_ = codec;
 	return true;
 }
 
@@ -520,8 +566,9 @@ static void mixChild(obs_source_t *parent, obs_source_t *child, void *param)
 void SourceRecorder::onPcm(void *param, size_t, struct audio_data *data)
 {
 	auto *self = static_cast<SourceRecorder *>(param);
-	if (self->failed_)
+	if (self->failed_ || self->paused_) {
 		return;
+	}
 	if (!self->wav_.write(reinterpret_cast<const float *const *>(data->data), data->frames)) {
 		self->failed_ = true;
 		self->setError("could not write the WAV file");

@@ -27,6 +27,9 @@ SessionConfig loadConfig()
 		cfg.withStream = config_get_bool(config, section, "withStream");
 	if (config_has_user_value(config, section, "recordComposite"))
 		cfg.recordComposite = config_get_bool(config, section, "recordComposite");
+	if (config_has_user_value(config, section, "withRecording")) {
+		cfg.withRecording = config_get_bool(config, section, "withRecording");
+	}
 	return cfg;
 }
 
@@ -40,24 +43,25 @@ void saveConfig(const SessionConfig &cfg)
 	config_set_string(config, section, "videoSize", cfg.videoSize.c_str());
 	config_set_bool(config, section, "withStream", cfg.withStream);
 	config_set_bool(config, section, "recordComposite", cfg.recordComposite);
+	config_set_bool(config, section, "withRecording", cfg.withRecording);
 }
 
-// One JSON object holds every collection's set, so saving one collection cannot
+// One JSON object per key holds every collection's set, so saving one collection cannot
 // drop another's: {"Mist": ["Mic", "Browser"], "Untitled": ["Mic"]}.
-static obs_data_t *openArmedTable(config_t *config)
+static obs_data_t *openSourceTable(config_t *config, const char *key)
 {
-	const char *json = config_get_string(config, section, "armedSources");
+	const char *json = config_get_string(config, section, key);
 	obs_data_t *table = json ? obs_data_create_from_json(json) : nullptr;
 	return table ? table : obs_data_create();
 }
 
-std::vector<std::string> loadArmedSources(const std::string &collection)
+static std::vector<std::string> loadSourceSet(const char *key, const std::string &collection)
 {
 	std::vector<std::string> names;
 	config_t *config = obs_frontend_get_profile_config();
 	if (!config)
 		return names;
-	obs_data_t *table = openArmedTable(config);
+	obs_data_t *table = openSourceTable(config, key);
 	obs_data_array_t *list = obs_data_get_array(table, collection.c_str());
 	const size_t count = list ? obs_data_array_count(list) : 0;
 	for (size_t i = 0; i < count; ++i) {
@@ -73,12 +77,12 @@ std::vector<std::string> loadArmedSources(const std::string &collection)
 	return names;
 }
 
-void saveArmedSources(const std::string &collection, const std::vector<std::string> &names)
+static void saveSourceSet(const char *key, const std::string &collection, const std::vector<std::string> &names)
 {
 	config_t *config = obs_frontend_get_profile_config();
 	if (!config)
 		return;
-	obs_data_t *table = openArmedTable(config);
+	obs_data_t *table = openSourceTable(config, key);
 	obs_data_array_t *list = obs_data_array_create();
 	for (const std::string &name : names) {
 		obs_data_t *entry = obs_data_create();
@@ -90,8 +94,28 @@ void saveArmedSources(const std::string &collection, const std::vector<std::stri
 	obs_data_array_release(list);
 	const char *json = obs_data_get_json(table);
 	if (json)
-		config_set_string(config, section, "armedSources", json);
+		config_set_string(config, section, key, json);
 	obs_data_release(table);
+}
+
+std::vector<std::string> loadArmedSources(const std::string &collection)
+{
+	return loadSourceSet("armedSources", collection);
+}
+
+void saveArmedSources(const std::string &collection, const std::vector<std::string> &names)
+{
+	saveSourceSet("armedSources", collection, names);
+}
+
+std::vector<std::string> loadHalfRateSources(const std::string &collection)
+{
+	return loadSourceSet("halfRateSources", collection);
+}
+
+void saveHalfRateSources(const std::string &collection, const std::vector<std::string> &names)
+{
+	saveSourceSet("halfRateSources", collection, names);
 }
 
 } // namespace iso

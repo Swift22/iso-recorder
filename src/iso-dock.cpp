@@ -5,6 +5,7 @@
 #include <obs.h>
 #include <obs-frontend-api.h>
 
+#include <QAction>
 #include <QBrush>
 #include <QCheckBox>
 #include <QColor>
@@ -16,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -52,7 +54,7 @@ static QString defaultBasePath()
 static bool muxableEncoderId(const std::string &id)
 {
 	const std::string codec = codecForEncoderId(id);
-	return codec == "h264" || codec == "hevc" || codec == "prores";
+	return codec == "h264" || codec == "hevc" || codec == "prores" || codec == "av1";
 }
 
 static bool encoderRegistered(const std::string &id)
@@ -139,6 +141,9 @@ static void fillEncoders(QComboBox *box)
 		   firstRegisteredEncoder({"obs_qsv11_v2", "obs_qsv11"}));
 	addEncoder(box, "Intel (Quick Sync) HEVC", firstRegisteredEncoder({"obs_qsv11_hevc"}));
 	addEncoder(box, "AMD (AMF)", firstRegisteredEncoder({"h264_texture_amf", "h264_amf"}));
+	addEncoder(box, "NVIDIA (NVENC) AV1", firstRegisteredEncoder({"obs_nvenc_av1_tex", "jim_av1_nvenc"}));
+	addEncoder(box, "Intel (Quick Sync) AV1", firstRegisteredEncoder({"obs_qsv11_av1"}));
+	addEncoder(box, "AMD (AMF) AV1", firstRegisteredEncoder({"av1_texture_amf"}));
 #endif
 	if (encoderRegistered("obs_x264") && muxableEncoderId("obs_x264"))
 		addEncoder(box, "CPU (x264)", "obs_x264");
@@ -238,7 +243,9 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	fillSizes(size_);
 	withStream_ = new QCheckBox(tr("Start and stop with the stream"), this);
 	withStream_->setChecked(true);
+	withRecording_ = new QCheckBox(QStringLiteral("Start with OBS's Record"), this);
 	recordScene_ = new QCheckBox(tr("Also record the live scene"), this);
+	picture_->setContextMenuPolicy(Qt::CustomContextMenu);
 
 	record_ = new QPushButton(tr("Record"), this);
 	newGame_ = new QPushButton(tr("New game"), this);
@@ -272,6 +279,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	layout->addWidget(size_);
 	layout->addWidget(audioNote);
 	layout->addWidget(withStream_);
+	layout->addWidget(withRecording_);
 	layout->addWidget(recordScene_);
 	layout->addWidget(record_);
 	layout->addWidget(newGame_);
@@ -295,7 +303,9 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	connect(encoder_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(size_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(withStream_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
+	connect(withRecording_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 	connect(recordScene_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
+	connect(picture_, &QListWidget::customContextMenuRequested, this, &IsoDock::onPictureMenu);
 
 	timer_ = new QTimer(this);
 	timer_->setInterval(1000);
@@ -364,26 +374,40 @@ void IsoDock::rememberArmed(const std::string &name, bool armed)
 	dirty_ = true;
 }
 
+void IsoDock::rememberHalfRate(const std::string &name, bool half)
+{
+	auto it = std::find(halfRate_.begin(), halfRate_.end(), name);
+	if (half) {
+		if (it == halfRate_.end()) {
+			halfRate_.push_back(name);
+		}
+	} else if (it != halfRate_.end()) {
+		halfRate_.erase(it);
+	}
+	dirty_ = true;
+}
+
 void IsoDock::applySourceState(QListWidgetItem *item, obs_source_t *source, Kind kind)
 {
 	item->setCheckState(session_->isArmed(source) ? Qt::Checked : Qt::Unchecked);
 
 	const QString name = QString::fromUtf8(obs_source_get_name(source));
+	const QString shown = session_->isHalfRate(source) ? name + QStringLiteral(" · half fps") : name;
 	switch (session_->rowStateFor(source)) {
 	case RowState::Recording:
-		item->setText(QStringLiteral("● ") + name);
+		item->setText(QStringLiteral("● ") + shown);
 		item->setForeground(QColor(0xc0, 0x39, 0x2b));
 		break;
 	case RowState::Failed:
-		item->setText(name + tr("  —  not recorded"));
+		item->setText(shown + tr("  —  not recorded"));
 		item->setForeground(QColor(0xb7, 0x79, 0x1f));
 		break;
 	case RowState::Aborted:
-		item->setText(name + tr("  —  incomplete"));
+		item->setText(shown + tr("  —  incomplete"));
 		item->setForeground(QColor(0xb7, 0x79, 0x1f));
 		break;
 	default:
-		item->setText(name);
+		item->setText(shown);
 		item->setForeground(QBrush());
 		break;
 	}
@@ -441,6 +465,8 @@ void IsoDock::refreshSources()
 	if (collectionName != armedCollection_) {
 		armedCollection_ = collectionName;
 		armed_ = loadArmedSources(armedCollection_);
+		halfRate_ = loadHalfRateSources(armedCollection_);
+		session_->setHalfRateNames(halfRate_);
 	}
 	if (!session_->active() && !armed_.empty() && !(pictureSources.empty() && soundSources.empty())) {
 		const size_t before = session_->armedVisualCount();
@@ -487,10 +513,13 @@ void IsoDock::refreshSources()
 	encoder_->setEnabled(!active);
 	size_->setEnabled(!active);
 	withStream_->setEnabled(!active);
+	withRecording_->setEnabled(!active);
 	recordScene_->setEnabled(!active);
 	record_->setText(active ? tr("Stop recording") : tr("Record"));
 	if (active) {
-		recording_->setText(tr("● Recording · ") + formatElapsed(session_->elapsedSeconds()));
+		const QString elapsed = formatElapsed(session_->elapsedSeconds());
+		recording_->setText(session_->paused() ? QStringLiteral("❚❚ Paused · ") + elapsed
+						       : tr("● Recording · ") + elapsed);
 		recording_->show();
 	} else {
 		recording_->hide();
@@ -551,6 +580,27 @@ void IsoDock::onItemChanged(QListWidgetItem *item)
 	QTimer::singleShot(0, this, &IsoDock::refreshSources);
 }
 
+void IsoDock::onPictureMenu(const QPoint &pos)
+{
+	auto *item = picture_->itemAt(pos);
+	auto *source = item ? sourceOf(item) : nullptr;
+	if (!source) {
+		return;
+	}
+	const bool half = session_->isHalfRate(source);
+	const std::string name = obs_source_get_name(source);
+	QMenu menu(this);
+	QAction *toggle = menu.addAction(QStringLiteral("Record at half frame rate"));
+	toggle->setCheckable(true);
+	toggle->setChecked(half);
+	if (menu.exec(picture_->viewport()->mapToGlobal(pos)) != toggle) {
+		return;
+	}
+	session_->setHalfRate(source, !half);
+	rememberHalfRate(name, !half);
+	refreshSources();
+}
+
 void IsoDock::onBrowse()
 {
 	const QString dir = QFileDialog::getExistingDirectory(this, tr("Save recordings in"),
@@ -570,7 +620,7 @@ void IsoDock::onRecordClicked()
 		message = tr("Stopped. Record again to carry on in the same folder.");
 	} else {
 		refreshSessionConfig();
-		message = QString::fromStdString(session_->startWithReport());
+		message = QString::fromStdString(session_->startWithReport(StartedBy::Dock));
 	}
 	refreshSources();
 	setStatus(message);
@@ -645,6 +695,7 @@ void IsoDock::saveSettings()
 	dirty_ = false;
 	saveConfig(configFromWidgets());
 	saveArmedSources(armedCollection_, armed_);
+	saveHalfRateSources(armedCollection_, halfRate_);
 	obs_frontend_save();
 }
 
@@ -666,6 +717,7 @@ void IsoDock::applyConfig(const SessionConfig &cfg)
 	const int sizeIndex = size_->findData(QString::fromStdString(cfg.videoSize));
 	size_->setCurrentIndex(sizeIndex < 0 ? 0 : sizeIndex);
 	withStream_->setChecked(cfg.withStream);
+	withRecording_->setChecked(cfg.withRecording);
 	recordScene_->setChecked(cfg.recordComposite);
 	updating_ = false;
 }
@@ -677,6 +729,7 @@ SessionConfig IsoDock::configFromWidgets() const
 	cfg.videoEncoderId = encoder_->currentData().toString().toStdString();
 	cfg.videoSize = size_->currentData().toString().toStdString();
 	cfg.withStream = withStream_->isChecked();
+	cfg.withRecording = withRecording_->isChecked();
 	cfg.recordComposite = recordScene_->isChecked();
 	return cfg;
 }

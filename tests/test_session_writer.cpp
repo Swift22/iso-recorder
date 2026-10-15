@@ -33,11 +33,15 @@ int main()
 	CHECK_EQ(sanitizeName("  spaced  "), "spaced");
 	CHECK_EQ(sanitizeName("???"), "source");
 
-	CHECK_EQ(makeFilename(Kind::Video, 1, "game", 1), "01_game.mov");
-	CHECK_EQ(makeFilename(Kind::Video, 2, "veado", 1), "02_veado.mov");
-	CHECK_EQ(makeFilename(Kind::Audio, 3, "Mic", 1), "03_Mic.wav");
-	CHECK_EQ(makeFilename(Kind::Audio, 3, "Mic", 2), "03_Mic_2.wav");
-	CHECK_EQ(makeFilename(Kind::Audio, 3, "Mic", 3), "03_Mic_3.wav");
+	CHECK_EQ(makeFilename(Kind::Video, 1, "game", 1, "h264"), "01_game.mov");
+	CHECK_EQ(makeFilename(Kind::Video, 2, "veado", 1, "hevc"), "02_veado.mov");
+	CHECK_EQ(makeFilename(Kind::Video, 4, "game", 1, "av1"), "04_game.mp4");
+	CHECK_EQ(makeFilename(Kind::Video, 4, "game", 2, "av1"), "04_game_2.mp4");
+	CHECK_EQ(makeFilename(Kind::Audio, 3, "Mic", 1, "h264"), "03_Mic.wav");
+	CHECK_EQ(makeFilename(Kind::Audio, 3, "Mic", 2, "h264"), "03_Mic_2.wav");
+	CHECK_EQ(makeFilename(Kind::Audio, 3, "Mic", 3, "h264"), "03_Mic_3.wav");
+	CHECK_EQ(containerFor("av1").outputId, "mp4_output");
+	CHECK_EQ(containerFor("hevc").outputId, "mov_output");
 
 	CHECK_EQ(formatClock(0.0), "0:00.0");
 	CHECK_EQ(formatClock(10.5), "0:10.5");
