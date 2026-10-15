@@ -48,6 +48,16 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 			obs_source_release(scene);
 		break;
 	}
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
+		// The old collection's sources are removed next, which would close every file
+		// as aborted. This is the last moment they are whole, so finish them here.
+		if (g_session->active()) {
+			g_session->stop(true);
+			blog(LOG_INFO, "[iso-recorder] stopped recording: the scene collection is changing");
+			g_dock->setStatus(QStringLiteral(
+				"Stopped: the scene collection changed. Press Record to carry on in the same folder."));
+		}
+		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 		g_dock->refreshSources();
 		break;
