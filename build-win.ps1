@@ -15,7 +15,10 @@ $cmakeArgs = @("-S", $PSScriptRoot, "-B", "$PSScriptRoot\build-win", "-G", "Ninj
   "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DOBS_SRC=$ObsSrc")
 if ($QtPrefix) { $cmakeArgs += "-DCMAKE_PREFIX_PATH=$QtPrefix" }
 cmake @cmakeArgs
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cmake --build "$PSScriptRoot\build-win"
+# A failed build leaves the last good DLL behind; installing it would pass for this build.
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($Install) {
   $dest = "$env:ProgramData\obs-studio\plugins\iso-recorder"

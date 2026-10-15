@@ -274,7 +274,7 @@ uint64_t IsoSession::pausedBefore(uint64_t wallNs) const
 	uint64_t total = 0;
 	for (const PauseSpan &span : pauses_) {
 		const uint64_t end = span.end ? span.end : wallNs;
-		const uint64_t until = std::min(end, wallNs);
+		const uint64_t until = (std::min)(end, wallNs);
 		if (until > span.start) {
 			total += until - span.start;
 		}
@@ -347,7 +347,7 @@ double IsoSession::offsetFor(Kind kind, uint64_t offsetNs) const
 {
 	// A file that starts after a pause sits further along the timeline by the time it
 	// was paused, not by the wall clock.
-	const uint64_t timeline = offsetNs - std::min(offsetNs, pausedBefore(epochNs_ + offsetNs));
+	const uint64_t timeline = offsetNs - (std::min)(offsetNs, pausedBefore(epochNs_ + offsetNs));
 	double offset = (double)timeline / 1e9;
 	if (kind == Kind::Video && info_.video.fps > 0.0)
 		offset = (double)std::llround(offset * info_.video.fps) / info_.video.fps;
