@@ -26,7 +26,8 @@ OBS Studio plugin (C++17, CMake, Qt6 dock) for OBS 32.x, macOS arm64 and Windows
 - Nothing fails quietly: every failure gets `blog(LOG_WARNING, "[iso-recorder] ...")` AND a plain-English `setStatus` in the dock, and a failed/aborted recording records its reason in `session.json`.
 - Errors: return `bool` with a `std::string *error` out-param.
 - One source failing never stops the others. The encoder warning asks, never refuses.
-- Pair every `obs_*_get_ref` / `get_*` with a release. `source_remove` can arrive off the main thread: hop to UI with `obs_queue_task(OBS_TASK_UI, ...)`.
+- Pair every `obs_*_get_ref` / `get_*` with a release. A deleted source is found by `IsoSession::dropRemovedSources()` polling `obs_source_removed()` on the 1 s tick (the entry's ref keeps it alive); there is no `source_remove` signal handler to keep thread-safe.
+- OBS calls output-stop and audio callbacks on its own threads: `SourceRecorder` state they write is `std::atomic`, and `error_` goes through `setError()` under its mutex.
 - Stop recordings on `OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN`, not just `EXIT`.
 - UI strings stay hard-coded English `QStringLiteral`; `data/locale/en-US.ini` is vestigial.
 

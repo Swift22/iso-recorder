@@ -458,17 +458,13 @@ void IsoDock::refreshSources()
 		const QSignalBlocker pictureBlocker(picture_);
 		const QSignalBlocker soundBlocker(sound_);
 		if (unchanged) {
-			for (int i = 0; i < picture_->count(); ++i) {
-				auto *item = picture_->item(i);
-				auto *source = sourceOf(item);
-				if (source)
-					applySourceState(item, source, Kind::Video);
-			}
-			for (int i = 0; i < sound_->count(); ++i) {
-				auto *item = sound_->item(i);
-				auto *source = sourceOf(item);
-				if (source)
-					applySourceState(item, source, Kind::Audio);
+			for (auto [list, kind] : {std::pair{picture_, Kind::Video}, std::pair{sound_, Kind::Audio}}) {
+				for (int i = 0; i < list->count(); ++i) {
+					auto *item = list->item(i);
+					if (auto *source = sourceOf(item)) {
+						applySourceState(item, source, kind);
+					}
+				}
 			}
 		} else {
 			releaseHeld();
