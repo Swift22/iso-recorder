@@ -2,9 +2,6 @@
 #include <obs-frontend-api.h>
 
 #include <QString>
-#include <QWidget>
-
-#include <string>
 
 #include "iso-dock.hpp"
 #include "iso-session.hpp"
@@ -34,22 +31,7 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 				g_dock->setStatus(QStringLiteral(
 					"The stream started with nothing ticked, so nothing is being recorded."));
 			} else {
-				const iso::SessionConfig &cfg = g_session->config();
-				std::string why;
-				std::string err;
-				if (!g_session->preflight(cfg, &why)) {
-					g_dock->setStatus(QString::fromStdString(why));
-				} else if (!g_session->start(cfg, &err)) {
-					if (g_session->active())
-						g_dock->setStatus(
-							QStringLiteral("Recording, but some sources failed: ") +
-							QString::fromStdString(err));
-					else
-						g_dock->setStatus(QString::fromStdString(err));
-				} else if (g_session->armedVisualCount() > iso::kEncoderWarnThreshold) {
-					g_dock->setStatus(QStringLiteral(
-						"Recording anyway, but this is more videos than this machine is expected to handle."));
-				}
+				g_dock->setStatus(QString::fromStdString(g_session->startWithReport()));
 			}
 		}
 		g_dock->refreshSources();
@@ -81,41 +63,13 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_EXIT:
 		if (g_session->active())
 			g_session->stop();
-		g_dock->saveSettings();
+		// On macOS OBS never destroys the dock and unload's frontend calls do nothing,
+		// so the dock lets go of its sources here, while they still exist.
+		g_dock->shutdown();
 		break;
 	default:
 		break;
 	}
-}
-
-struct SourceRemoval {
-	std::string uuid;
-};
-
-static void onSourceRemovedTask(void *param)
-{
-	auto *job = static_cast<SourceRemoval *>(param);
-	if (g_session) {
-		obs_source_t *source = obs_get_source_by_uuid(job->uuid.c_str());
-		if (source) {
-			g_session->onSourceRemoved(source);
-			obs_source_release(source);
-		}
-	}
-	delete job;
-}
-
-// source_remove can arrive off the main thread, while the stop path touches outputs and
-// encoders; hand only the uuid across and do the real work on the UI thread.
-static void onSourceRemoveSignal(void *, calldata_t *calldata)
-{
-	void *ptr = nullptr;
-	calldata_get_ptr(calldata, "source", &ptr);
-	auto *source = static_cast<obs_source_t *>(ptr);
-	if (!source)
-		return;
-	auto *job = new SourceRemoval{obs_source_get_uuid(source)};
-	obs_queue_task(OBS_TASK_UI, onSourceRemovedTask, job, false);
 }
 
 bool obs_module_load(void)
@@ -126,8 +80,6 @@ bool obs_module_load(void)
 	if (!g_dockOwnedByOBS)
 		blog(LOG_WARNING, "[iso-recorder] dock id already in use; the dock was not added");
 	obs_frontend_add_event_callback(onFrontendEvent, nullptr);
-	signal_handler_connect(obs_get_signal_handler(), "source_remove", onSourceRemoveSignal,
-			       nullptr);
 	blog(LOG_INFO, "[iso-recorder] loaded (v" ISO_VERSION ")");
 	return true;
 }
@@ -135,8 +87,6 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
-	signal_handler_disconnect(obs_get_signal_handler(), "source_remove", onSourceRemoveSignal,
-				  nullptr);
 	if (g_dockOwnedByOBS)
 		obs_frontend_remove_dock("iso-recorder-dock");
 	else

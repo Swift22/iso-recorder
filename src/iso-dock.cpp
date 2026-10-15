@@ -9,6 +9,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -29,6 +30,16 @@
 #include <string>
 
 namespace iso {
+
+// Long enough to read a message the next once-a-second refresh would replace.
+constexpr qint64 kStatusHoldMs = 10000;
+
+// Each row keeps the source it shows in its UserRole; held_ owns the reference.
+static obs_source_t *sourceOf(const QListWidgetItem *item)
+{
+	return reinterpret_cast<obs_source_t *>( // NOLINT(performance-no-int-to-ptr)
+		item->data(Qt::UserRole).value<quintptr>());
+}
 
 static QString defaultBasePath()
 {
@@ -279,7 +290,8 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	connect(picture_, &QListWidget::itemChanged, this, &IsoDock::onItemChanged);
 	connect(sound_, &QListWidget::itemChanged, this, &IsoDock::onItemChanged);
 	connect(browse_, &QPushButton::clicked, this, &IsoDock::onBrowse);
-	connect(path_, &QLineEdit::textChanged, this, &IsoDock::onConfigChanged);
+	// Once per edit, not per keystroke: a change re-resolves the stream encoder and saves the collection.
+	connect(path_, &QLineEdit::editingFinished, this, &IsoDock::onConfigChanged);
 	connect(encoder_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(size_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(withStream_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
@@ -315,7 +327,6 @@ void IsoDock::addSource(QListWidget *list, obs_source_t *source, Kind kind)
 {
 	auto *item = new QListWidgetItem(obs_source_get_name(source), list);
 	item->setData(Qt::UserRole, QVariant::fromValue(reinterpret_cast<quintptr>(source)));
-	item->setData(Qt::UserRole + 1, kind == Kind::Video ? 0 : 1);
 	item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
 	held_.push_back(obs_source_get_ref(source));
 	applySourceState(item, source, kind);
@@ -424,8 +435,9 @@ void IsoDock::refreshSources()
 	// devices exist before the scene collection has loaded, and restoring only until
 	// something was ticked left every source in the collection untickable for the whole
 	// stream, because the first tick had already used the one chance up.
-	const char *collection = obs_frontend_get_current_scene_collection();
+	char *collection = obs_frontend_get_current_scene_collection(); // a copy we must bfree
 	const std::string collectionName = collection ? collection : "";
+	bfree(collection);
 	if (collectionName != armedCollection_) {
 		armedCollection_ = collectionName;
 		armed_ = loadArmedSources(armedCollection_);
@@ -441,21 +453,20 @@ void IsoDock::refreshSources()
 	}
 
 	updating_ = true;
-	const bool unchanged = pictureSources == lastPicture_ && soundSources == lastSound_;	{
+	const bool unchanged = pictureSources == lastPicture_ && soundSources == lastSound_;
+	{
 		const QSignalBlocker pictureBlocker(picture_);
 		const QSignalBlocker soundBlocker(sound_);
 		if (unchanged) {
 			for (int i = 0; i < picture_->count(); ++i) {
 				auto *item = picture_->item(i);
-				auto *source = reinterpret_cast<obs_source_t *>(
-					item->data(Qt::UserRole).value<quintptr>());
+				auto *source = sourceOf(item);
 				if (source)
 					applySourceState(item, source, Kind::Video);
 			}
 			for (int i = 0; i < sound_->count(); ++i) {
 				auto *item = sound_->item(i);
-				auto *source = reinterpret_cast<obs_source_t *>(
-					item->data(Qt::UserRole).value<quintptr>());
+				auto *source = sourceOf(item);
 				if (source)
 					applySourceState(item, source, Kind::Audio);
 			}
@@ -492,8 +503,9 @@ void IsoDock::refreshSources()
 	if (!active && !armed) {
 		record_->setEnabled(false);
 		record_->setToolTip(tr("Tick at least one source to record."));
-		if (!transientStatus_)
+		if (QDateTime::currentMSecsSinceEpoch() >= statusUntilMs_) {
 			status_->setText(tr("Tick a source to record."));
+		}
 	} else {
 		record_->setEnabled(true);
 		record_->setToolTip(QString());
@@ -516,7 +528,7 @@ void IsoDock::onItemChanged(QListWidgetItem *item)
 {
 	if (updating_)
 		return;
-	auto *source = reinterpret_cast<obs_source_t *>(item->data(Qt::UserRole).value<quintptr>());
+	auto *source = sourceOf(item);
 	if (!source)
 		return;
 	if (item->checkState() == Qt::Checked) {
@@ -547,8 +559,11 @@ void IsoDock::onBrowse()
 {
 	const QString dir = QFileDialog::getExistingDirectory(this, tr("Save recordings in"),
 							      path_->text());
-	if (!dir.isEmpty())
-		path_->setText(dir);
+	if (dir.isEmpty()) {
+		return;
+	}
+	path_->setText(dir);
+	onConfigChanged();
 }
 
 void IsoDock::onRecordClicked()
@@ -559,19 +574,7 @@ void IsoDock::onRecordClicked()
 		message = tr("Stopped. Record again to carry on in the same folder.");
 	} else {
 		refreshSessionConfig();
-		const SessionConfig &cfg = session_->config();
-		std::string why;
-		std::string err;
-		if (!session_->preflight(cfg, &why))
-			message = QString::fromStdString(why);
-		else if (!session_->start(cfg, &err)) {
-			if (session_->active())
-				message = tr("Recording, but some sources failed: ") +
-					  QString::fromStdString(err);
-			else
-				message = QString::fromStdString(err);
-		} else
-			message = tr("Recording.");
+		message = QString::fromStdString(session_->startWithReport());
 	}
 	refreshSources();
 	setStatus(message);
@@ -581,13 +584,11 @@ void IsoDock::onTick()
 {
 	refreshSources();
 	const std::string failure = session_->refreshManifest();
-	transientStatus_ = false;
 	if (!failure.empty()) {
 		setStatus(tr("Source failed: ") + QString::fromStdString(failure));
 	} else {
 		for (int row = 0; row < picture_->count(); ++row) {
-			auto *source = reinterpret_cast<obs_source_t *>(
-				picture_->item(row)->data(Qt::UserRole).value<quintptr>());
+			auto *source = sourceOf(picture_->item(row));
 			if (!source || !session_->isArmed(source) || !spoutCompositeUnset(source))
 				continue;
 			const std::string name = obs_source_get_name(source);
@@ -604,17 +605,27 @@ void IsoDock::onTick()
 		}
 	}
 	if (dirty_) {
-		dirty_ = false;
-		saveConfig(configFromWidgets());
-		saveArmedSources(armedCollection_, armed_);
-		obs_frontend_save();
+		saveSettings();
 	}
 }
 
 void IsoDock::setStatus(const QString &text)
 {
-	transientStatus_ = true;
+	statusUntilMs_ = QDateTime::currentMSecsSinceEpoch() + kStatusHoldMs;
 	status_->setText(text);
+}
+
+void IsoDock::shutdown()
+{
+	timer_->stop();
+	saveSettings();
+	updating_ = true;
+	picture_->clear();
+	sound_->clear();
+	updating_ = false;
+	lastPicture_.clear();
+	lastSound_.clear();
+	releaseHeld();
 }
 
 void IsoDock::refreshSessionConfig()
@@ -629,10 +640,8 @@ void IsoDock::refreshSessionConfig()
 	cfg.videoSettings = encoderSettings_;
 	cfg.audioSettings = audioSettings_;
 	session_->setConfig(cfg);
-	if (oldVideo)
-		obs_data_release(oldVideo);
-	if (oldAudio)
-		obs_data_release(oldAudio);
+	obs_data_release(oldVideo);
+	obs_data_release(oldAudio);
 }
 
 void IsoDock::saveSettings()
@@ -676,6 +685,18 @@ SessionConfig IsoDock::configFromWidgets() const
 	return cfg;
 }
 
+static obs_data_t *copyEncoderSettings(obs_encoder_t *encoder)
+{
+	obs_data_t *settings = encoder ? obs_encoder_get_settings(encoder) : nullptr;
+	if (!settings) {
+		return nullptr;
+	}
+	const char *json = obs_data_get_json(settings);
+	obs_data_t *copy = json ? obs_data_create_from_json(json) : nullptr;
+	obs_data_release(settings);
+	return copy;
+}
+
 SessionConfig IsoDock::resolveConfig(SessionConfig cfg, obs_data_t **videoSettings,
 				    obs_data_t **audioSettings) const
 {
@@ -702,25 +723,12 @@ SessionConfig IsoDock::resolveConfig(SessionConfig cfg, obs_data_t **videoSettin
 	// copy of its own. The whole blob is forwarded untouched: obs-nvenc only honours
 	// "bitrate" while its own "rate_control" key is present, so picking keys apart would
 	// silently drop the stream's rate control.
-	if (streamVideo) {
-		obs_data_t *settings = obs_encoder_get_settings(streamVideo);
-		if (settings) {
-			const char *json = obs_data_get_json(settings);
-			if (json)
-				*videoSettings = obs_data_create_from_json(json);
-			const int64_t kbps = obs_data_get_int(settings, "bitrate");
-			if (kbps > 0)
-				cfg.bitrateBitsPerSec = (uint64_t)kbps * 1000ull;
-			obs_data_release(settings);
-		}
-	}
-	if (streamAudio) {
-		obs_data_t *settings = obs_encoder_get_settings(streamAudio);
-		if (settings) {
-			const char *json = obs_data_get_json(settings);
-			if (json)
-				*audioSettings = obs_data_create_from_json(json);
-			obs_data_release(settings);
+	*videoSettings = copyEncoderSettings(streamVideo);
+	*audioSettings = copyEncoderSettings(streamAudio);
+	if (*videoSettings) {
+		const int64_t kbps = obs_data_get_int(*videoSettings, "bitrate");
+		if (kbps > 0) {
+			cfg.bitrateBitsPerSec = (uint64_t)kbps * 1000ull;
 		}
 	}
 

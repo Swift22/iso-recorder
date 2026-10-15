@@ -102,8 +102,9 @@ bool WavWriter::write(const float *const *planar, size_t frames)
 		failed_ = true;
 		return false;
 	}
-	/* interleave to 24-bit little-endian PCM */
-	std::vector<uint8_t> out((size_t)bytes);
+	/* interleave to 24-bit little-endian PCM; the buffer is reused so the audio thread does not allocate */
+	std::vector<uint8_t> &out = buffer_;
+	out.resize((size_t)bytes);
 	size_t k = 0;
 	for (size_t f = 0; f < frames; ++f) {
 		for (uint16_t c = 0; c < channels_; ++c, k += 3) {

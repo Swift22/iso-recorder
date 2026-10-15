@@ -26,14 +26,12 @@ namespace iso {
 // itself is ignored here; the recorders each read their own source.
 static void onGlobalAudioKeepalive(void *, size_t, struct audio_data *) {}
 
-IsoSession::IsoSession() = default;
-IsoSession::~IsoSession()
+// The live-scene recording's name in the manifest and its file, 00_Session.mov.
+static constexpr const char *kSessionName = "Session";
+
+static std::string sessionFile()
 {
-	stop();
-	if (videoSettings_)
-		obs_data_release(videoSettings_);
-	if (audioSettings_)
-		obs_data_release(audioSettings_);
+	return makeFilename(Kind::Video, 0, kSessionName, 1);
 }
 
 static std::tm localTime(std::time_t t)
@@ -47,31 +45,49 @@ static std::tm localTime(std::time_t t)
 	return tm;
 }
 
+static std::string formatNow(const char *format)
+{
+	std::tm tm = localTime(std::time(nullptr));
+	char b[64];
+	std::strftime(b, sizeof b, format, &tm);
+	return b;
+}
+
 static std::string nowStamp()
 {
-	std::time_t t = std::time(nullptr);
-	std::tm tm = localTime(t);
-	char b[32];
-	std::strftime(b, sizeof b, "%Y-%m-%d %H-%M-%S", &tm);
-	return b;
+	return formatNow("%Y-%m-%d %H-%M-%S");
 }
-
 static std::string isoNow()
 {
-	std::time_t t = std::time(nullptr);
-	std::tm tm = localTime(t);
-	char b[32];
-	std::strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%S%z", &tm);
-	return b;
+	return formatNow("%Y-%m-%dT%H:%M:%S%z");
 }
-
 static std::string humanDate()
 {
-	std::time_t t = std::time(nullptr);
-	std::tm tm = localTime(t);
-	char b[64];
-	std::strftime(b, sizeof b, "%d %B %Y", &tm);
-	return b;
+	return formatNow("%d %B %Y");
+}
+
+static bool ensureDir(const std::string &path)
+{
+	return os_mkdirs(path.c_str()) != MKDIR_ERROR;
+}
+
+static void replaceRef(obs_data_t *&slot, obs_data_t *next)
+{
+	if (next) {
+		obs_data_addref(next);
+	}
+	if (slot) {
+		obs_data_release(slot);
+	}
+	slot = next;
+}
+
+IsoSession::IsoSession() = default;
+IsoSession::~IsoSession()
+{
+	stop();
+	replaceRef(videoSettings_, nullptr);
+	replaceRef(audioSettings_, nullptr);
 }
 
 static std::string platformName()
@@ -167,8 +183,9 @@ static std::string labelFor(const std::string &name, Kind kind)
 		return "microphone";
 	if (name == "Discord")
 		return "Discord call";
-	if (name == "Session")
+	if (name == kSessionName) {
 		return "the stream as viewers saw it (reference)";
+	}
 	return kind == Kind::Video ? name + ", on its own" : name;
 }
 
@@ -285,7 +302,7 @@ bool IsoSession::preflight(const SessionConfig &cfg, std::string *why)
 			*why = "Choose a folder to save in.";
 		return false;
 	}
-	if (os_mkdirs(cfg.basePath.c_str()) != 0 && !os_file_exists(cfg.basePath.c_str())) {
+	if (!ensureDir(cfg.basePath)) {
 		if (why)
 			*why = "That folder cannot be created.";
 		return false;
@@ -362,32 +379,62 @@ std::string IsoSession::segmentDir() const { return folder_ + "/" + gameFolder_;
 
 // Close one recorder into the manifest. Everything the recording needs is read off
 // the recorder before stop() clears its start time.
+void IsoSession::finishRecorder(SourceRecorder &rec, const std::string &name, Kind kind, const std::string &file,
+				const std::string &label, Status okStatus, const std::string &abortReason)
+{
+	const std::string codec = rec.codec();
+	const double offset = offsetFor(kind, rec.startOffsetNs());
+	const double duration = rec.durationSeconds();
+	const bool failed = rec.failed();
+	std::string reason = failed ? rec.error() : "";
+	rec.stop();
+	Status status = failed ? Status::Failed : okStatus;
+	if (!failed && okStatus == Status::Aborted) {
+		reason = abortReason;
+	}
+	uint64_t missing = 0;
+	if (!failed && okStatus == Status::Complete && kind == Kind::Video &&
+	    frameShortfall(rec.totalFrames(), duration, info_.video.fps, &missing)) {
+		status = Status::Aborted;
+		reason = shortfallReason(missing);
+		blog(LOG_WARNING, "[iso-recorder] %s: %s", name.c_str(), reason.c_str());
+	}
+	finished_.push_back({name, kind, file, codec, offset, duration, status, reason, label, gameFolder_});
+}
+
+void IsoSession::recordFailure(const std::string &name, Kind kind, const std::string &label, const std::string &reason)
+{
+	finished_.push_back(
+		{name, kind, "", "", std::nullopt, std::nullopt, Status::Failed, reason, label, gameFolder_});
+}
+
+Recording IsoSession::liveRecording(const SourceRecorder &rec, const std::string &name, Kind kind,
+				    const std::string &file, const std::string &label) const
+{
+	Recording r;
+	r.source = name;
+	r.kind = kind;
+	r.label = label;
+	r.folder = gameFolder_;
+	r.file = file;
+	r.codec = rec.codec();
+	r.startOffset = offsetFor(kind, rec.startOffsetNs());
+	if (rec.failed()) {
+		r.status = Status::Failed;
+		r.error = rec.error();
+		r.duration = rec.durationSeconds();
+	} else {
+		r.status = Status::Recording;
+	}
+	return r;
+}
+
 void IsoSession::closeEntry(Entry &e, Status okStatus, const std::string &abortReason)
 {
 	if (!e.recorder)
 		return;
-	const std::string file = makeFilename(e.kind, e.index, e.name, e.segment);
-	const std::string codec = e.recorder->codec();
-	const double offset = offsetFor(e.kind, e.recorder->startOffsetNs());
-	const double duration = e.recorder->durationSeconds();
-	const bool failed = e.recorder->failed();
-	const std::string error = failed ? e.recorder->error() : "";
-	e.recorder->stop();
-	Status status = failed ? Status::Failed : okStatus;
-	std::string reason = error;
-	if (!failed && okStatus == Status::Aborted) {
-		reason = abortReason;
-	}
-	if (!failed && okStatus == Status::Complete && e.kind == Kind::Video) {
-		uint64_t missing = 0;
-		if (frameShortfall(e.recorder->totalFrames(), duration, info_.video.fps, &missing)) {
-			status = Status::Aborted;
-			reason = shortfallReason(missing);
-			blog(LOG_WARNING, "[iso-recorder] %s: %s", e.name.c_str(), reason.c_str());
-		}
-	}
-	finished_.push_back({e.name, e.kind, file, codec, offset, duration, status, reason, e.label,
-			     gameFolder_});
+	finishRecorder(*e.recorder, e.name, e.kind, makeFilename(e.kind, e.index, e.name, e.segment), e.label, okStatus,
+		       abortReason);
 	e.recorder.reset();
 }
 
@@ -395,17 +442,15 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 {
 	obs_source_t *scene = obs_frontend_get_current_scene();
 	if (!scene) {
-		finished_.push_back({"Session", Kind::Video, "", "", std::nullopt, std::nullopt,
-				     Status::Failed, "no live scene to record yet",
-				     labelFor("Session", Kind::Video), gameFolder_});
+		recordFailure(kSessionName, Kind::Video, labelFor(kSessionName, Kind::Video),
+			      "no live scene to record yet");
 		blog(LOG_WARNING,
 		     "[iso-recorder] the live scene is not ready; not recording 00_Session.mov");
 		return false;
 	}
-	composite_ = std::make_unique<SourceRecorder>(scene, "Session",
-						      segmentDir() + "/00_Session.mov", videoEncoderId_,
-						      videoSettings_, audioSettings_, config_.capWidth,
-						      config_.capHeight, Kind::Video, audioCodec_);
+	composite_ = std::make_unique<SourceRecorder>(scene, kSessionName, segmentDir() + "/" + sessionFile(),
+						      config_.videoEncoderId, videoSettings_, audioSettings_,
+						      config_.capWidth, config_.capHeight);
 	obs_source_release(scene);
 	// The live scene is the picture the stream is already encoding, and a second
 	// full-canvas encode on the same GPU is what starves the stream. Take the
@@ -425,9 +470,7 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 		obs_output_release(stream);
 	}
 	if (!started) {
-		finished_.push_back({"Session", Kind::Video, "", "", std::nullopt, std::nullopt,
-				     Status::Failed, err, labelFor("Session", Kind::Video),
-				     gameFolder_});
+		recordFailure(kSessionName, Kind::Video, labelFor(kSessionName, Kind::Video), err);
 		blog(LOG_WARNING, "[iso-recorder] Session: %s", err.c_str());
 		composite_.reset();
 		if (error && error->empty())
@@ -442,25 +485,8 @@ void IsoSession::closeComposite()
 {
 	if (!composite_)
 		return;
-	const double offset = offsetFor(Kind::Video, composite_->startOffsetNs());
-	const double duration = composite_->durationSeconds();
-	const bool failed = composite_->failed();
-	const std::string error = failed ? composite_->error() : "";
-	const std::string codec = composite_->codec();
-	composite_->stop();
-	Status status = failed ? Status::Failed : Status::Complete;
-	std::string reason = error;
-	if (!failed) {
-		uint64_t missing = 0;
-		if (frameShortfall(composite_->totalFrames(), duration, info_.video.fps, &missing)) {
-			status = Status::Aborted;
-			reason = shortfallReason(missing);
-			blog(LOG_WARNING, "[iso-recorder] the live scene: %s", reason.c_str());
-		}
-	}
-	finished_.push_back({"Session", Kind::Video,
-			     makeFilename(Kind::Video, 0, "Session", 1), codec, offset, duration,
-			     status, reason, labelFor("Session", Kind::Video), gameFolder_});
+	finishRecorder(*composite_, kSessionName, Kind::Video, sessionFile(), labelFor(kSessionName, Kind::Video),
+		       Status::Complete);
 	composite_.reset();
 }
 
@@ -479,13 +505,11 @@ bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 	e.waitingForPicture = false;
 	const std::string file = makeFilename(e.kind, e.index, e.name, e.segment);
 	const std::string path = segmentDir() + "/" + file;
-	e.recorder = std::make_unique<SourceRecorder>(e.source, e.name, path, videoEncoderId_,
-						      videoSettings_, audioSettings_, config_.capWidth,
-						      config_.capHeight, e.kind, audioCodec_);
+	e.recorder = std::make_unique<SourceRecorder>(e.source, e.name, path, config_.videoEncoderId, videoSettings_,
+						      audioSettings_, config_.capWidth, config_.capHeight);
 	std::string err;
 	if (!e.recorder->start(&err)) {
-		finished_.push_back({e.name, e.kind, "", "", std::nullopt, std::nullopt,
-				     Status::Failed, err, e.label, gameFolder_});
+		recordFailure(e.name, e.kind, e.label, err);
 		blog(LOG_WARNING, "[iso-recorder] %s: %s", e.name.c_str(), err.c_str());
 		if (error && error->empty())
 			*error = e.name + ": " + err;
@@ -509,39 +533,22 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 			      os_file_exists(folder_.c_str());
 	canResume_ = false;
 	config_ = cfg;
-	if (resuming) {
-		++gameNumber_;
-	} else {
+	if (!resuming) {
 		folder_ = cfg.basePath + "/" + nowStamp();
-		if (os_mkdirs(folder_.c_str()) != 0 && !os_file_exists(folder_.c_str())) {
+		if (!ensureDir(folder_)) {
 			if (error) {
 				*error = "could not create the session folder";
 			}
 			return false;
 		}
 		// One session can hold several games; every session starts with its first.
-		gameNumber_ = 1;
+		gameNumber_ = 0;
 	}
-	char gameName[32];
-	std::snprintf(gameName, sizeof gameName, "%02d_Game", gameNumber_);
-	gameFolder_ = gameName;
-	if (os_mkdirs(segmentDir().c_str()) != 0 && !os_file_exists(segmentDir().c_str())) {
-		if (error)
-			*error = "could not create the game folder";
+	if (!openNextGameFolder(error)) {
 		return false;
 	}
-	videoEncoderId_ = cfg.videoEncoderId;
-	if (videoSettings_)
-		obs_data_release(videoSettings_);
-	videoSettings_ = cfg.videoSettings;
-	if (videoSettings_)
-		obs_data_addref(videoSettings_);
-	if (audioSettings_)
-		obs_data_release(audioSettings_);
-	audioSettings_ = cfg.audioSettings;
-	if (audioSettings_)
-		obs_data_addref(audioSettings_);
-	audioCodec_ = cfg.audioCodec;
+	replaceRef(videoSettings_, cfg.videoSettings);
+	replaceRef(audioSettings_, cfg.audioSettings);
 	active_ = true;
 	if (!globalAudioHeld_) {
 		obs_add_raw_audio_callback(0, nullptr, onGlobalAudioKeepalive, nullptr);
@@ -583,20 +590,30 @@ bool IsoSession::start(const SessionConfig &cfg, std::string *error)
 	return ok;
 }
 
+std::string IsoSession::startWithReport()
+{
+	const SessionConfig cfg = config_; // a copy: start() assigns config_ from it
+	std::string why;
+	if (!preflight(cfg, &why)) {
+		return why;
+	}
+	std::string err;
+	if (!start(cfg, &err)) {
+		return active_ ? "Recording, but some sources failed: " + err : err;
+	}
+	if (armedVisualCount() > kEncoderWarnThreshold) {
+		return "Recording anyway, but this is more videos than this machine is expected to handle.";
+	}
+	return "Recording.";
+}
+
 void IsoSession::stop(bool canResume)
 {
-	// OBS destroys every source during its own shutdown, which makes the global
-	// source_remove handler call back in here; without this the first stop would
-	// run the 5 s output wait a second time from inside OBS's teardown.
-	if (stopping_)
-		return;
-	stopping_ = true;
 	for (auto &e : entries_) {
 		// A source that stayed pictureless for the whole session has no file and no
 		// recorder, so say so in the manifest rather than leaving it out silently.
 		if (!e.recorder && e.waitingForPicture) {
-			finished_.push_back({e.name, e.kind, "", "", std::nullopt, std::nullopt, Status::Failed,
-					     "the source never had a picture to record", e.label, gameFolder_});
+			recordFailure(e.name, e.kind, e.label, "the source never had a picture to record");
 		}
 		closeEntry(e, Status::Complete);
 		if (e.source)
@@ -618,14 +635,30 @@ void IsoSession::stop(bool canResume)
 	// Reset per-session numbering only now, after the final manifest is written
 	// and the live entries are gone, so a later session's pre-arm cannot inherit
 	// a stale index/segment.
+	resetNumbering();
+}
+
+void IsoSession::resetNumbering()
+{
 	segmentCount_.clear();
 	indexFor_.clear();
 	nextIndex_ = {{Kind::Video, 1}, {Kind::Audio, 1}};
-	failedSeen_ = 0;
-	stopping_ = false;
 }
 
-std::vector<Recording> IsoSession::recordings() const { return finished_; }
+bool IsoSession::openNextGameFolder(std::string *error)
+{
+	++gameNumber_;
+	char name[32];
+	std::snprintf(name, sizeof name, "%02d_Game", gameNumber_);
+	gameFolder_ = name;
+	if (ensureDir(segmentDir())) {
+		return true;
+	}
+	if (error) {
+		*error = "could not create the game folder";
+	}
+	return false;
+}
 
 // Close the current game's files and open the next one. The session, its clock and
 // the armed sources all survive; only the folder and the file numbering restart.
@@ -640,9 +673,7 @@ bool IsoSession::newGame(std::string *error)
 	closeComposite();
 	// Renumber the surviving sources from one, so each game folder has its own
 	// 01_, 02_ ... regardless of what happened in the folder before it.
-	nextIndex_ = {{Kind::Video, 1}, {Kind::Audio, 1}};
-	segmentCount_.clear();
-	indexFor_.clear();
+	resetNumbering();
 	for (auto &e : entries_) {
 		const auto key = std::make_pair(e.name, e.kind);
 		e.segment = 1;
@@ -650,13 +681,7 @@ bool IsoSession::newGame(std::string *error)
 		indexFor_[key] = e.index;
 		segmentCount_[key] = 1;
 	}
-	++gameNumber_;
-	char name[32];
-	std::snprintf(name, sizeof name, "%02d_Game", gameNumber_);
-	gameFolder_ = name;
-	if (os_mkdirs(segmentDir().c_str()) != 0 && !os_file_exists(segmentDir().c_str())) {
-		if (error)
-			*error = "could not create the game folder";
+	if (!openNextGameFolder(error)) {
 		return false;
 	}
 	bool ok = true;
@@ -692,11 +717,35 @@ void IsoSession::retryWaiting()
 	}
 }
 
+// A view is built for one size, so a source that changes size mid-recording (a window
+// resized, a game switching resolution) would be cropped or padded from then on. Close
+// that file and carry on in the next segment at the new size.
+void IsoSession::restartResized()
+{
+	bool restarted = false;
+	for (auto &e : entries_) {
+		if (!e.recorder || e.recorder->failed() || !e.recorder->sizeChanged()) {
+			continue;
+		}
+		blog(LOG_INFO, "[iso-recorder] %s: the source changed size, so it continues in a new file",
+		     e.name.c_str());
+		closeEntry(e, Status::Complete);
+		e.segment = ++segmentCount_[std::make_pair(e.name, e.kind)];
+		startEntry(e, nullptr, false);
+		restarted = true;
+	}
+	if (restarted) {
+		rewriteManifest();
+	}
+}
+
 std::string IsoSession::refreshManifest()
 {
+	dropRemovedSources();
 	if (!active_)
 		return {};
 	retryWaiting();
+	restartResized();
 	size_t failed = 0;
 	std::string message;
 	for (const auto &e : entries_) {
@@ -717,11 +766,17 @@ std::string IsoSession::refreshManifest()
 	return {};
 }
 
-void IsoSession::onSourceRemoved(obs_source_t *source)
+void IsoSession::dropRemovedSources()
 {
-	if (stopping_)
-		return;
-	removeEntry(source, Status::Aborted, "the source was deleted while it was recording");
+	std::vector<obs_source_t *> gone;
+	for (const auto &e : entries_) {
+		if (obs_source_removed(e.source)) {
+			gone.push_back(e.source);
+		}
+	}
+	for (obs_source_t *source : gone) {
+		removeEntry(source, Status::Aborted, "the source was deleted while it was recording");
+	}
 }
 
 void IsoSession::onSceneChanged(obs_source_t *scene)
@@ -735,43 +790,15 @@ void IsoSession::rewriteManifest()
 	if (!active_)
 		return;
 	std::vector<Recording> all = finished_;
-	for (auto &e : entries_) {
-		if (!e.recorder)
-			continue; // failed entries were appended to finished_ already
-		Recording r;
-		r.source = e.name;
-		r.kind = e.kind;
-		r.label = e.label;
-		r.folder = gameFolder_;
-		r.file = makeFilename(e.kind, e.index, e.name, e.segment);
-		r.codec = e.recorder->codec();
-		r.startOffset = offsetFor(e.kind, e.recorder->startOffsetNs());
-		if (e.recorder->failed()) {
-			r.status = Status::Failed;
-			r.error = e.recorder->error();
-			r.duration = e.recorder->durationSeconds();
-		} else {
-			r.status = Status::Recording;
+	for (const auto &e : entries_) {
+		if (e.recorder) { // failed entries were appended to finished_ already
+			all.push_back(liveRecording(*e.recorder, e.name, e.kind,
+						    makeFilename(e.kind, e.index, e.name, e.segment), e.label));
 		}
-		all.push_back(std::move(r));
 	}
 	if (composite_ && (composite_->active() || composite_->failed())) {
-		Recording r;
-		r.source = "Session";
-		r.kind = Kind::Video;
-		r.label = labelFor("Session", Kind::Video);
-		r.folder = gameFolder_;
-		r.file = makeFilename(Kind::Video, 0, "Session", 1);
-		r.codec = composite_->codec();
-		r.startOffset = offsetFor(Kind::Video, composite_->startOffsetNs());
-		if (composite_->failed()) {
-			r.status = Status::Failed;
-			r.error = composite_->error();
-			r.duration = composite_->durationSeconds();
-		} else {
-			r.status = Status::Recording;
-		}
-		all.push_back(std::move(r));
+		all.push_back(liveRecording(*composite_, kSessionName, Kind::Video, sessionFile(),
+					    labelFor(kSessionName, Kind::Video)));
 	}
 	writeFile(folder_ + "/session.json", buildSessionJson(info_, all));
 	writeFile(folder_ + "/README.txt", buildReadme(info_, all));

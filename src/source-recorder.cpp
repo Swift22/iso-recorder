@@ -16,27 +16,28 @@ static constexpr size_t kBackgroundChannel = 0;
 static constexpr size_t kSourceChannel = 1;
 static constexpr long long kGreenScreenColor = 0xFF00FF00LL;
 
-SourceRecorder::SourceRecorder(obs_source_t *source, std::string name, std::string path,
-			       std::string videoEncoderId, obs_data_t *videoSettings,
-			       obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight,
-			       Kind kind, std::string audioCodec)
-	: source_(obs_source_get_ref(source)), name_(std::move(name)), path_(std::move(path)),
-	  kind_(kind), videoEncoderId_(std::move(videoEncoderId)), capWidth_(capWidth),
-	  capHeight_(capHeight), audioCodec_(std::move(audioCodec))
+// An owned deep copy, so later edits to the caller's settings never reach a running encoder.
+static obs_data_t *cloneData(obs_data_t *src)
+{
+	const char *json = src ? obs_data_get_json(src) : nullptr;
+	return json ? obs_data_create_from_json(json) : nullptr;
+}
+
+SourceRecorder::SourceRecorder(obs_source_t *source, std::string name, std::string path, std::string videoEncoderId,
+			       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth,
+			       uint32_t capHeight)
+	: source_(obs_source_get_ref(source)),
+	  name_(std::move(name)),
+	  path_(std::move(path)),
+	  videoEncoderId_(std::move(videoEncoderId)),
+	  capWidth_(capWidth),
+	  capHeight_(capHeight)
 {
 	const uint32_t flags = obs_source_get_output_flags(source_);
 	hasVideo_ = (flags & OBS_SOURCE_VIDEO) != 0;
 	hasAudio_ = (flags & (OBS_SOURCE_AUDIO | OBS_SOURCE_COMPOSITE)) != 0;
-	if (videoSettings) {
-		const char *json = obs_data_get_json(videoSettings);
-		if (json)
-			videoSettings_ = obs_data_create_from_json(json);
-	}
-	if (audioSettings) {
-		const char *json = obs_data_get_json(audioSettings);
-		if (json)
-			audioSettings_ = obs_data_create_from_json(json);
-	}
+	videoSettings_ = cloneData(videoSettings);
+	audioSettings_ = cloneData(audioSettings);
 }
 
 SourceRecorder::~SourceRecorder()
@@ -57,7 +58,8 @@ double SourceRecorder::durationSeconds() const
 	if (start == 0) {
 		return 0.0;
 	}
-	const uint64_t end = stopNs_ ? stopNs_ : os_gettime_ns();
+	const uint64_t stopped = stopNs_.load();
+	const uint64_t end = stopped ? stopped : os_gettime_ns();
 	return end > start ? (double)(end - start) / 1e9 : 0.0;
 }
 
@@ -77,36 +79,51 @@ void SourceRecorder::noteStart(uint64_t epochNs, bool atSessionStart)
 	startOffsetNs_ = atSessionStart ? 0 : startNs_ - epochNs_;
 }
 
+void SourceRecorder::setError(std::string msg)
+{
+	std::lock_guard<std::mutex> lock(errorMutex_);
+	error_ = std::move(msg);
+}
+
+bool SourceRecorder::fail(std::string msg, std::string *error)
+{
+	failed_ = true;
+	setError(msg);
+	if (error) {
+		*error = std::move(msg);
+	}
+	return false;
+}
+
+bool SourceRecorder::openAudio(uint32_t samplesPerSec)
+{
+	struct audio_output_info oi{};
+	oi.name = name_.c_str();
+	oi.speakers = SPEAKERS_STEREO;
+	oi.samples_per_sec = samplesPerSec;
+	oi.format = AUDIO_FORMAT_FLOAT_PLANAR;
+	oi.input_param = this;
+	oi.input_callback = onAudioInput;
+	return audio_output_open(&audio_, &oi) == AUDIO_OUTPUT_SUCCESS;
+}
+
 bool SourceRecorder::start(std::string *error)
 {
-	auto fail = [&](std::string msg) {
-		failed_ = true;
-		error_ = msg;
-		if (error)
-			*error = std::move(msg);
-		return false;
-	};
-
 	if (!hasVideo_) {
-		struct audio_output_info oi {};
-		oi.name = name_.c_str();
-		oi.speakers = SPEAKERS_STEREO;
-		oi.samples_per_sec = 48000;
-		oi.format = AUDIO_FORMAT_FLOAT_PLANAR;
-		oi.input_param = this;
-		oi.input_callback = onAudioInput;
-		if (audio_output_open(&audio_, &oi) != AUDIO_OUTPUT_SUCCESS)
-			return fail("the audio device did not open");
-		if (!wav_.open(path_, oi.samples_per_sec, 2, 24)) {
+		constexpr uint32_t kWavRate = 48000;
+		if (!openAudio(kWavRate)) {
+			return fail("the audio device did not open", error);
+		}
+		if (!wav_.open(path_, kWavRate, 2, 24)) {
 			audio_output_close(audio_);
 			audio_ = nullptr;
-			return fail("could not write the WAV file");
+			return fail("could not write the WAV file", error);
 		}
 		if (!audio_output_connect(audio_, 0, nullptr, onPcm, this)) {
 			audio_output_close(audio_);
 			audio_ = nullptr;
 			wav_.close();
-			return fail("the audio device did not accept the recorder");
+			return fail("the audio device did not accept the recorder", error);
 		}
 		obs_source_inc_showing(source_);
 		showingInced_ = true;
@@ -117,13 +134,15 @@ bool SourceRecorder::start(std::string *error)
 
 	struct obs_video_info ovi;
 	if (!obs_get_video_info(&ovi))
-		return fail("OBS has no video yet");
+		return fail("OBS has no video yet", error);
 	uint32_t w = obs_source_get_width(source_);
 	uint32_t h = obs_source_get_height(source_);
 	if (w == 0 || h == 0)
-		return fail("the source has no picture yet");
+		return fail("the source has no picture yet", error);
 	w += (w & 1);
 	h += (h & 1);
+	baseWidth_ = w;
+	baseHeight_ = h;
 
 	uint32_t ow = w;
 	uint32_t oh = h;
@@ -151,7 +170,7 @@ bool SourceRecorder::start(std::string *error)
 	view_ = obs_view_create();
 	video_ = obs_view_add2(view_, &ovi);
 	if (!video_)
-		return fail("could not make a private video output");
+		return fail("could not make a private video output", error);
 
 	obs_data_t *bg = obs_data_create();
 	obs_data_set_int(bg, "color", kGreenScreenColor);
@@ -161,7 +180,7 @@ bool SourceRecorder::start(std::string *error)
 						name_.c_str(), bg);
 	obs_data_release(bg);
 	if (!background_)
-		return fail("could not make the recording background");
+		return fail("could not make the recording background", error);
 	obs_view_set_source(view_, kBackgroundChannel, background_);
 	obs_view_set_source(view_, kSourceChannel, source_);
 	obs_source_inc_showing(background_);
@@ -174,7 +193,7 @@ bool SourceRecorder::start(std::string *error)
 		// because the picture is smaller than its minimum frame size, which a
 		// small avatar or overlay source easily is. The software encoder has no
 		// such floor, so give the source one more chance before failing it.
-		const std::string first = error_;
+		const std::string first = this->error();
 		closeVideoPipeline();
 		if (videoEncoderId_ != "obs_x264" && openVideoPipeline("obs_x264")) {
 			blog(LOG_WARNING,
@@ -183,12 +202,12 @@ bool SourceRecorder::start(std::string *error)
 			codec_ = "h264";
 			return true;
 		}
-		const std::string second = error_;
+		const std::string second = this->error();
 		closeVideoPipeline();
 		std::string msg = first;
 		if (!second.empty() && second != first)
 			msg += "; the software encoder also failed: " + second;
-		return fail(std::move(msg));
+		return fail(std::move(msg), error);
 	}
 	codec_ = codecForEncoderId(videoEncoderId_);
 	return true;
@@ -196,7 +215,7 @@ bool SourceRecorder::start(std::string *error)
 
 bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 {
-	error_.clear();
+	setError({});
 
 	// Every NVENC session on a card shares one encoder chip with the stream. The stream's
 	// quality settings (slow preset, two-pass, lookahead, B-frames) cost several plain
@@ -204,8 +223,7 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 	obs_data_t *encoderSettings = videoSettings_;
 	obs_data_t *light = nullptr;
 	if (encoderId.rfind("obs_nvenc", 0) == 0) {
-		const char *json = videoSettings_ ? obs_data_get_json(videoSettings_) : nullptr;
-		light = json ? obs_data_create_from_json(json) : obs_data_create();
+		light = videoSettings_ ? cloneData(videoSettings_) : obs_data_create();
 		obs_data_set_string(light, "preset", "p1");
 		obs_data_set_string(light, "multipass", "disabled");
 		obs_data_set_bool(light, "lookahead", false);
@@ -217,7 +235,7 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 		obs_data_release(light);
 	}
 	if (!videoEnc_) {
-		error_ = "the encoder did not open";
+		setError("the encoder did not open");
 		return false;
 	}
 	obs_encoder_set_video(videoEnc_, video_);
@@ -227,27 +245,20 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 	output_ = obs_output_create("mov_output", name_.c_str(), settings, nullptr);
 	obs_data_release(settings);
 	if (!output_) {
-		error_ = "the container did not open";
+		setError("the container did not open");
 		return false;
 	}
 	obs_output_set_video_encoder(output_, videoEnc_);
 
 	// An OBS AV output refuses to start without both encoders, so even a
 	// source with no sound gets an audio track; the tap writes silence.
-	struct audio_output_info oi {};
-	oi.name = name_.c_str();
-	oi.speakers = SPEAKERS_STEREO;
-	oi.samples_per_sec = audio_output_get_sample_rate(obs_get_audio());
-	oi.format = AUDIO_FORMAT_FLOAT_PLANAR;
-	oi.input_param = this;
-	oi.input_callback = onAudioInput;
-	if (audio_output_open(&audio_, &oi) != AUDIO_OUTPUT_SUCCESS) {
-		error_ = "the audio device did not open";
+	if (!openAudio(audio_output_get_sample_rate(obs_get_audio()))) {
+		setError("the audio device did not open");
 		return false;
 	}
 	audioEnc_ = obs_audio_encoder_create("ffmpeg_aac", name_.c_str(), audioSettings_, 0, nullptr);
 	if (!audioEnc_) {
-		error_ = "the audio encoder did not open";
+		setError("the audio encoder did not open");
 		return false;
 	}
 	obs_encoder_set_audio(audioEnc_, audio_);
@@ -255,9 +266,7 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 
 	if (!obs_output_start(output_)) {
 		const char *last = obs_output_get_last_error(output_);
-		error_ = last ? last : "";
-		if (error_.empty())
-			error_ = "the output refused to start";
+		setError(last && *last ? last : "the output refused to start");
 		return false;
 	}
 	started_ = true;
@@ -269,23 +278,14 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId)
 
 bool SourceRecorder::startShared(obs_encoder_t *video, obs_encoder_t *audio, std::string *error)
 {
-	auto fail = [&](std::string msg) {
-		failed_ = true;
-		error_ = msg;
-		if (error) {
-			*error = std::move(msg);
-		}
-		return false;
-	};
-
 	shared_ = true;
-	error_.clear();
+	setError({});
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "path", path_.c_str());
 	output_ = obs_output_create("mov_output", name_.c_str(), settings, nullptr);
 	obs_data_release(settings);
 	if (!output_) {
-		return fail("the container did not open");
+		return fail("the container did not open", error);
 	}
 	videoEnc_ = obs_encoder_get_ref(video);
 	audioEnc_ = obs_encoder_get_ref(audio);
@@ -300,7 +300,7 @@ bool SourceRecorder::startShared(obs_encoder_t *video, obs_encoder_t *audio, std
 			msg = "the output refused to start";
 		}
 		closeVideoPipeline();
-		return fail(std::move(msg));
+		return fail(std::move(msg), error);
 	}
 	started_ = true;
 	outputStarted_ = true;
@@ -355,9 +355,7 @@ void SourceRecorder::onOutputStopped(void *param, calldata_t *calldata)
 	self->failed_ = true;
 	const char *last = nullptr;
 	calldata_get_string(calldata, "last_error", &last);
-	self->error_ = last ? last : "";
-	if (self->error_.empty())
-		self->error_ = "the recorder stopped early";
+	self->setError(last && *last ? last : "the recorder stopped early");
 	self->stopNs_ = os_gettime_ns();
 	self->started_ = false;
 }
@@ -438,6 +436,22 @@ void SourceRecorder::stop()
 	wav_.close();
 }
 
+bool SourceRecorder::sizeChanged() const
+{
+	if (!view_ || !started_) {
+		return false;
+	}
+	uint32_t w = obs_source_get_width(source_);
+	uint32_t h = obs_source_get_height(source_);
+	// A minimised window reports 0x0 for a moment; that is not a new size to record.
+	if (w == 0 || h == 0) {
+		return false;
+	}
+	w += (w & 1);
+	h += (h & 1);
+	return w != baseWidth_ || h != baseHeight_;
+}
+
 void SourceRecorder::setSource(obs_source_t *next)
 {
 	if (!view_ || !next || next == source_)
@@ -510,7 +524,7 @@ void SourceRecorder::onPcm(void *param, size_t, struct audio_data *data)
 		return;
 	if (!self->wav_.write(reinterpret_cast<const float *const *>(data->data), data->frames)) {
 		self->failed_ = true;
-		self->error_ = "could not write the WAV file";
+		self->setError("could not write the WAV file");
 		blog(LOG_WARNING, "[iso-recorder] %s: could not write the WAV file",
 		     self->name_.c_str());
 	}
@@ -537,17 +551,14 @@ void SourceRecorder::mixPlain(struct audio_output_data *mixes, size_t mixIdx)
 	}
 }
 
-void SourceRecorder::mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t *newTs)
+void SourceRecorder::mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t minTs)
 {
-	uint64_t minTs = 0;
-	obs_source_enum_active_tree(source_, calcMinTs, &minTs);
 	MixCtx ctx {};
 	ctx.audio = audio_;
 	ctx.minTs = minTs;
 	for (size_t ch = 0; ch < MAX_AUDIO_CHANNELS; ++ch)
 		ctx.target[ch] = mixes[mixIdx].data[ch];
 	obs_source_enum_active_tree(source_, mixChild, &ctx);
-	*newTs = minTs ? minTs : obs_source_get_audio_timestamp(source_);
 }
 
 bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint32_t activeMixers,
@@ -563,7 +574,11 @@ bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint
 	if (obs_source_audio_pending(source_))
 		return true;
 	const bool composite = isComposite();
-	if (!composite) {
+	uint64_t minTs = 0;
+	if (composite) {
+		obs_source_enum_active_tree(source_, calcMinTs, &minTs);
+		*newTs = minTs ? minTs : obs_source_get_audio_timestamp(source_);
+	} else {
 		if (!hasAudio_)
 			return true;
 		const uint64_t ts = obs_source_get_audio_timestamp(source_);
@@ -575,7 +590,7 @@ bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint
 		if (!(activeMixers & (1u << mix)))
 			continue;
 		if (composite)
-			mixComposite(mixes, mix, newTs);
+			mixComposite(mixes, mix, minTs);
 		else
 			mixPlain(mixes, mix);
 	}

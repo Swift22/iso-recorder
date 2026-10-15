@@ -33,6 +33,7 @@ private:
 	uint16_t channels_ = 2;
 	uint16_t bits_ = 24;
 	bool failed_ = false;
+	std::vector<uint8_t> buffer_;
 };
 
 } // namespace iso

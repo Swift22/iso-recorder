@@ -26,10 +26,8 @@ public:
 	void setStatus(const QString &text);
 	void saveSettings();
 	void refreshSessionConfig();
-
-signals:
-	void sourceAdded(obs_source_t *source);
-	void sourceRemoved(obs_source_t *source);
+	// OBS is closing: stop ticking and let go of every source while they still exist.
+	void shutdown();
 
 private slots:
 	void onRecordClicked();
@@ -75,7 +73,7 @@ private:
 	std::vector<std::string> spoutWarned_;
 	bool updating_ = false;
 	bool dirty_ = false;
-	bool transientStatus_ = false;
+	qint64 statusUntilMs_ = 0; // a set message stays up until then
 };
 
 } // namespace iso

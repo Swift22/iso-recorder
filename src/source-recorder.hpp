@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 #include "session-writer.hpp"
@@ -15,10 +16,8 @@ namespace iso {
 
 class SourceRecorder {
 public:
-	SourceRecorder(obs_source_t *source, std::string name, std::string path,
-		       std::string videoEncoderId, obs_data_t *videoSettings,
-		       obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight, Kind kind,
-		       std::string audioCodec);
+	SourceRecorder(obs_source_t *source, std::string name, std::string path, std::string videoEncoderId,
+		       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight);
 	~SourceRecorder();
 
 	bool start(std::string *error);
@@ -27,12 +26,19 @@ public:
 	bool startShared(obs_encoder_t *video, obs_encoder_t *audio, std::string *error);
 	void stop();
 	void setSource(obs_source_t *next);
+	// The source no longer matches the size its private view was built for, so the
+	// picture is being cropped or padded.
+	bool sizeChanged() const;
 
 	bool active() const { return started_; }
 	bool failed() const { return failed_; }
-	const std::string &error() const { return error_; }
-	const std::string &sourceName() const { return name_; }
-	const std::string &path() const { return path_; }
+	// OBS calls the stop and PCM callbacks on its own threads, so the state they set
+	// is atomic and the message is read under a lock.
+	std::string error() const
+	{
+		std::lock_guard<std::mutex> lock(errorMutex_);
+		return error_;
+	}
 	const std::string &codec() const { return codec_; }
 	uint64_t startOffsetNs() const;
 	double durationSeconds() const;
@@ -50,8 +56,12 @@ private:
 				 uint32_t activeMixers, struct audio_output_data *mixes);
 	bool fillAudio(uint64_t startTs, uint64_t endTs, uint64_t *newTs, uint32_t activeMixers,
 		       struct audio_output_data *mixes);
-	void mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t *newTs);
+	void mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t minTs);
 	void mixPlain(struct audio_output_data *mixes, size_t mixIdx);
+	// Marks the recorder failed with msg and copies it to *error; always false.
+	void setError(std::string msg);
+	bool fail(std::string msg, std::string *error);
+	bool openAudio(uint32_t samplesPerSec);
 	bool openVideoPipeline(const std::string &encoderId);
 	void closeVideoPipeline();
 	bool isComposite() const
@@ -63,7 +73,6 @@ private:
 	std::string name_;
 	std::string path_;
 	std::string codec_;
-	Kind kind_;
 	bool hasVideo_ = false;
 	bool hasAudio_ = false;
 	std::string videoEncoderId_;
@@ -71,7 +80,8 @@ private:
 	obs_data_t *audioSettings_ = nullptr; // owned copy
 	uint32_t capWidth_ = 0;               // recording-size cap; 0 means the source's own size
 	uint32_t capHeight_ = 0;
-	std::string audioCodec_;
+	uint32_t baseWidth_ = 0; // the even-rounded source size the view was built for
+	uint32_t baseHeight_ = 0;
 
 	obs_view_t *view_ = nullptr;
 	video_t *video_ = nullptr;
@@ -88,14 +98,15 @@ private:
 	os_event_t *stopEvent_ = nullptr;
 
 	uint64_t startNs_ = 0;
-	uint64_t stopNs_ = 0;
+	std::atomic<uint64_t> stopNs_{0};
 	uint64_t epochNs_ = 0;
 	uint64_t startOffsetNs_ = 0;
 	uint32_t totalFrames_ = 0;
-	bool started_ = false;
-	bool failed_ = false;
+	std::atomic<bool> started_{false};
+	std::atomic<bool> failed_{false};
 	bool showingInced_ = false;
 	bool bgShowingInced_ = false;
+	mutable std::mutex errorMutex_;
 	std::string error_;
 };
 

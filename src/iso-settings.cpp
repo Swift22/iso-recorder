@@ -20,9 +20,6 @@ SessionConfig loadConfig()
 	const char *encoder = config_get_string(config, section, "videoEncoderId");
 	if (encoder)
 		cfg.videoEncoderId = encoder;
-	const char *codec = config_get_string(config, section, "audioCodec");
-	if (codec)
-		cfg.audioCodec = codec;
 	const char *size = config_get_string(config, section, "videoSize");
 	if (size && *size)
 		cfg.videoSize = size;
@@ -40,7 +37,6 @@ void saveConfig(const SessionConfig &cfg)
 		return;
 	config_set_string(config, section, "basePath", cfg.basePath.c_str());
 	config_set_string(config, section, "videoEncoderId", cfg.videoEncoderId.c_str());
-	config_set_string(config, section, "audioCodec", cfg.audioCodec.c_str());
 	config_set_string(config, section, "videoSize", cfg.videoSize.c_str());
 	config_set_bool(config, section, "withStream", cfg.withStream);
 	config_set_bool(config, section, "recordComposite", cfg.recordComposite);
