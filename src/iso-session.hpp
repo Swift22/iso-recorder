@@ -26,6 +26,11 @@ enum class RowState { Idle, WillRecord, Recording, Failed, Aborted };
 // Record button. Only a session OBS's Record started follows OBS's pause and stop.
 enum class StartedBy { Dock, Stream, Record };
 
+// The stream's largest encode of OBS's main canvas. Enhanced Broadcasting streams several
+// encoders (a quality ladder, plus one per extra canvas such as a vertical one) in an
+// order the service picks, so the first one is not necessarily the main picture.
+obs_encoder_t *mainCanvasStreamEncoder(obs_output_t *stream);
+
 struct SessionConfig {
 	std::string basePath;
 	std::string videoEncoderId;

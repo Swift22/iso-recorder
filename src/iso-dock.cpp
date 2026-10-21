@@ -696,7 +696,12 @@ void IsoDock::saveSettings()
 	saveConfig(configFromWidgets());
 	saveArmedSources(armedCollection_, armed_);
 	saveHalfRateSources(armedCollection_, halfRate_);
-	obs_frontend_save();
+	std::string err;
+	if (!writeSettings(&err)) {
+		blog(LOG_WARNING, "[iso-recorder] %s", err.c_str());
+		setStatus(QStringLiteral("Your ticks and settings could not be saved: %1")
+				  .arg(QString::fromStdString(err)));
+	}
 }
 
 void IsoDock::onConfigChanged()
@@ -753,7 +758,7 @@ SessionConfig IsoDock::resolveConfig(SessionConfig cfg, obs_data_t **videoSettin
 	*audioSettings = nullptr;
 
 	obs_output_t *stream = obs_frontend_get_streaming_output();
-	obs_encoder_t *streamVideo = stream ? obs_output_get_video_encoder(stream) : nullptr;
+	obs_encoder_t *streamVideo = mainCanvasStreamEncoder(stream);
 	obs_encoder_t *streamAudio = stream ? obs_output_get_audio_encoder(stream, 0) : nullptr;
 
 	if (cfg.videoEncoderId.empty()) {

@@ -332,8 +332,9 @@ session with a gap rather than two folders that cannot be lined up. A stop that 
 stream ending, or from OBS shutting down, ends the session for good.
 
 The dock holds arming and settings only. It asks `IsoSession` to arm, disarm, start or stop; it
-never touches an encoder. Arm state and settings persist in the plugin's own config section; the
-running session does not.
+never touches an encoder. Arm state and settings persist in the plugin's own `settings.json`
+(OBS's `plugin_config/iso-recorder/`), never in an OBS profile, so switching profiles does not
+change what is ticked; the running session does not persist.
 
 ### Triggers and lifecycle
 

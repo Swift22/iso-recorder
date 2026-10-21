@@ -5,6 +5,7 @@
 
 #include "iso-dock.hpp"
 #include "iso-session.hpp"
+#include "iso-settings.hpp"
 
 OBS_DECLARE_MODULE()
 MODULE_EXPORT const char *obs_module_description(void)
@@ -140,5 +141,6 @@ void obs_module_unload(void)
 	g_dockOwnedByOBS = false;
 	delete g_session;
 	g_session = nullptr;
+	iso::releaseSettings();
 	blog(LOG_INFO, "[iso-recorder] unloaded");
 }

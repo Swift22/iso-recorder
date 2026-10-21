@@ -30,6 +30,27 @@ static void onGlobalAudioKeepalive(void *, size_t, struct audio_data *) {}
 // The live-scene recording's name in the manifest; its file is 00_Session.mov or .mp4.
 static constexpr const char *kSessionName = "Session";
 
+obs_encoder_t *mainCanvasStreamEncoder(obs_output_t *stream)
+{
+	if (!stream) {
+		return nullptr;
+	}
+	video_t *main = obs_get_video();
+	obs_encoder_t *best = nullptr;
+	for (size_t i = 0; i < MAX_OUTPUT_VIDEO_ENCODERS; ++i) {
+		obs_encoder_t *enc = obs_output_get_video_encoder2(stream, i);
+		// The parent, not obs_encoder_video(): a frame-rate divisor gives the encoder a
+		// video of its own that still draws the main canvas.
+		if (!enc || obs_encoder_parent_video(enc) != main) {
+			continue;
+		}
+		if (!best || obs_encoder_get_width(enc) > obs_encoder_get_width(best)) {
+			best = enc;
+		}
+	}
+	return best;
+}
+
 static std::tm localTime(std::time_t t)
 {
 	std::tm tm{};
@@ -476,7 +497,7 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 	obs_encoder_t *streamVideo = nullptr;
 	obs_encoder_t *streamAudio = nullptr;
 	if (stream && obs_output_active(stream)) {
-		streamVideo = obs_output_get_video_encoder(stream);
+		streamVideo = mainCanvasStreamEncoder(stream);
 		streamAudio = obs_output_get_audio_encoder(stream, 0);
 	}
 	const bool share = streamVideo && streamAudio && obs_encoder_active(streamVideo) &&
