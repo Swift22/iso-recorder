@@ -16,6 +16,11 @@ static constexpr size_t kBackgroundChannel = 0;
 static constexpr size_t kSourceChannel = 1;
 static constexpr long long kGreenScreenColor = 0xFF00FF00LL;
 
+bool hasPicture(obs_source_t *source)
+{
+	return obs_source_get_width(source) >= 145 && obs_source_get_height(source) >= 49;
+}
+
 // An owned deep copy, so later edits to the caller's settings never reach a running encoder.
 static obs_data_t *cloneData(obs_data_t *src)
 {
@@ -487,12 +492,13 @@ bool SourceRecorder::sizeChanged() const
 	if (!view_ || !started_) {
 		return false;
 	}
-	uint32_t w = obs_source_get_width(source_);
-	uint32_t h = obs_source_get_height(source_);
-	// A minimised window reports 0x0 for a moment; that is not a new size to record.
-	if (w == 0 || h == 0) {
+	// A minimised window reports 0x0 for a moment, and a Spout capture whose sender quit
+	// falls back to its placeholder; neither is a new size to record.
+	if (!hasPicture(source_)) {
 		return false;
 	}
+	uint32_t w = obs_source_get_width(source_);
+	uint32_t h = obs_source_get_height(source_);
 	w += (w & 1);
 	h += (h & 1);
 	return w != baseWidth_ || h != baseHeight_;

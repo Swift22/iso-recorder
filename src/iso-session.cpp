@@ -539,7 +539,7 @@ bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 {
 	// A capture whose app is not up yet has no picture. That is not a failure — the
 	// source is still armed, and retryWaiting() starts it the moment a picture appears.
-	if (e.kind == Kind::Video && (obs_source_get_width(e.source) == 0 || obs_source_get_height(e.source) == 0)) {
+	if (e.kind == Kind::Video && !hasPicture(e.source)) {
 		if (!e.waitingForPicture) {
 			e.waitingForPicture = true;
 			blog(LOG_INFO, "[iso-recorder] %s: no picture yet, so it will start recording when one appears",
@@ -776,7 +776,7 @@ void IsoSession::retryWaiting()
 		if (!e.waitingForPicture || e.recorder) {
 			continue;
 		}
-		if (obs_source_get_width(e.source) == 0 || obs_source_get_height(e.source) == 0) {
+		if (!hasPicture(e.source)) {
 			continue;
 		}
 		if (startEntry(e, nullptr, false) && e.recorder) {

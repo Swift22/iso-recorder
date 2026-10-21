@@ -14,6 +14,11 @@
 
 namespace iso {
 
+// False while the source shows no real picture: 0x0 before its app is up, or a stand-in
+// smaller than NVENC's H.264 minimum (145x49), such as a Spout capture's 100x100
+// placeholder while no sender is running. Recording that would only write a junk file.
+bool hasPicture(obs_source_t *source);
+
 class SourceRecorder {
 public:
 	// frameRateDivisor is 1 for full rate or 2 for half; a shared encoder ignores it.
