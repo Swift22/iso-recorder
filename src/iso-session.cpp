@@ -657,6 +657,8 @@ std::string IsoSession::startWithReport(StartedBy by)
 		return why;
 	}
 	startedBy_ = by;
+	static const char *const byName[] = {"the dock", "the stream", "OBS's Record button"};
+	blog(LOG_INFO, "[iso-recorder] recording %zu ticked sources, started by %s", entries_.size(), byName[(int)by]);
 	std::string err;
 	if (!start(cfg, &err)) {
 		return active_ ? "Recording, but some sources failed: " + err : err;
@@ -674,6 +676,7 @@ void IsoSession::stop(bool canResume)
 		std::string ignored; // setPaused() has already warned about any file that would not resume
 		setPaused(false, &ignored);
 	}
+	blog(LOG_INFO, "[iso-recorder] stopped recording %zu sources", entries_.size());
 	for (auto &e : entries_) {
 		// A source that stayed pictureless for the whole session has no file and no
 		// recorder, so say so in the manifest rather than leaving it out silently.
