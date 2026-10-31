@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <utility>
 
 namespace iso {
@@ -120,6 +121,104 @@ void SourceRecorder::noteStart(uint64_t epochNs, bool atSessionStart)
 	startOffsetNs_ = atSessionStart ? 0 : startNs_ - epochNs_;
 }
 
+SourceRecorder::Setup SourceRecorder::readSetup() const
+{
+	Setup s;
+	s.kind = obs_source_get_id(source_);
+	s.muted = obs_source_muted(source_);
+	s.sampleRate = audio_output_get_sample_rate(obs_get_audio());
+	if (obs_data_t *settings = obs_source_get_settings(source_)) {
+		s.device = obs_data_get_string(settings, "device_id");
+		obs_data_release(settings);
+	}
+	obs_source_enum_filters(
+		source_,
+		[](obs_source_t *, obs_source_t *filter, void *param) {
+			std::string f = std::string(obs_source_get_name(filter)) + " [" + obs_source_get_id(filter) + "]";
+			if (!obs_source_enabled(filter))
+				f += " (off)";
+			static_cast<std::vector<std::string> *>(param)->push_back(std::move(f));
+		},
+		&s.filters);
+	return s;
+}
+
+std::vector<std::string> SourceRecorder::describeChange(const Setup &was, const Setup &now)
+{
+	std::vector<std::string> out;
+	if (was.device != now.device)
+		out.push_back("device " + was.device + " -> " + now.device);
+	if (was.muted != now.muted)
+		out.push_back(now.muted ? "muted" : "unmuted");
+	if (was.sampleRate != now.sampleRate)
+		out.push_back("OBS sample rate " + std::to_string(was.sampleRate) + " -> " + std::to_string(now.sampleRate));
+	auto has = [](const std::vector<std::string> &v, const std::string &f) {
+		return std::find(v.begin(), v.end(), f) != v.end();
+	};
+	for (const auto &f : now.filters)
+		if (!has(was.filters, f))
+			out.push_back("filter now " + f);
+	for (const auto &f : was.filters)
+		if (!has(now.filters, f))
+			out.push_back("filter gone or changed: " + f);
+	return out;
+}
+
+void SourceRecorder::pollSetup()
+{
+	if (!started_)
+		return;
+	const Setup now = readSetup();
+	const auto diff = describeChange(setup_, now);
+	if (diff.empty())
+		return;
+	const double at = (double)(os_gettime_ns() - startNs_) / 1e9;
+	for (const auto &d : diff) {
+		blog(LOG_WARNING, "[iso-recorder] %s: audio setup changed at %.1f s: %s", name_.c_str(), at, d.c_str());
+		if (changes_.size() < 30) {
+			char t[24];
+			std::snprintf(t, sizeof t, "%.1f s: ", at);
+			changes_.push_back(t + d);
+		}
+	}
+	setup_ = now;
+}
+
+AudioHealth SourceRecorder::health() const
+{
+	AudioHealth h;
+	h.sampleRate = setup_.sampleRate;
+	h.sourceKind = setup_.kind;
+	h.device = setup_.device;
+	h.filters = setup_.filters;
+	h.changes = changes_;
+	const AudioCounts c = stats_.counts();
+	const double total = (double)(c.ticks + c.idleTicks);
+	const double tickSec = (double)AUDIO_OUTPUT_FRAMES / (setup_.sampleRate ? setup_.sampleRate : 48000);
+	h.clipped = c.clipped;
+	h.jumps = c.jumps;
+	h.maxGapMs = c.maxGapMs;
+	if (c.peak > 0.0f)
+		h.peakDb = 20.0 * std::log10((double)c.peak);
+	h.silentPct = c.ticks ? 100.0 * (double)c.silentTicks / (double)c.ticks : 0.0;
+	h.idlePct = total ? 100.0 * (double)c.idleTicks / total : 0.0;
+	h.longestSilence = (double)c.longestSilentTicks * tickSec;
+	if (h.device == "default")
+		h.flags.push_back("follows the system's default input, which can change under it");
+	if (c.clipped)
+		h.flags.push_back(std::to_string(c.clipped) + " samples hit full scale (clipping)");
+	if (c.jumps)
+		h.flags.push_back("the source's audio clock jumped " + std::to_string(c.jumps) +
+				  " times, so audio may be missing or repeated");
+	if (total > 0 && c.ticks == 0)
+		h.flags.push_back("the source sent no audio");
+	else if (c.ticks > 0 && c.silentTicks == c.ticks)
+		h.flags.push_back("only silence was recorded");
+	if (h.idlePct > 20.0)
+		h.flags.push_back("the source had no audio for " + std::to_string((int)h.idlePct) + "% of the time");
+	return h;
+}
+
 void SourceRecorder::setError(std::string msg)
 {
 	std::lock_guard<std::mutex> lock(errorMutex_);
@@ -150,6 +249,15 @@ bool SourceRecorder::openAudio(uint32_t samplesPerSec)
 
 bool SourceRecorder::start(std::string *error)
 {
+	setup_ = readSetup();
+	if (hasAudio_) {
+		std::string filters;
+		for (const auto &f : setup_.filters)
+			filters += (filters.empty() ? "" : ", ") + f;
+		blog(LOG_INFO, "[iso-recorder] %s: audio setup: %s, device %s, OBS at %u Hz, filters: %s", name_.c_str(),
+		     setup_.kind.c_str(), setup_.device.empty() ? "(none)" : setup_.device.c_str(), setup_.sampleRate,
+		     filters.empty() ? "(none)" : filters.c_str());
+	}
 	if (!hasVideo_) {
 		constexpr uint32_t kWavRate = 48000;
 		if (!openAudio(kWavRate)) {
@@ -624,21 +732,28 @@ bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint
 	// real-time silence, which is what a live recorder should do when a
 	// source has nothing to say yet.
 	*newTs = startTs;
-	if (obs_source_audio_pending(source_))
+	if (obs_source_audio_pending(source_)) {
+		stats_.idle();
 		return true;
+	}
 	const bool composite = isComposite();
 	uint64_t minTs = 0;
 	if (composite) {
 		obs_source_enum_active_tree(source_, calcMinTs, &minTs);
 		*newTs = minTs ? minTs : obs_source_get_audio_timestamp(source_);
 	} else {
-		if (!hasAudio_)
+		if (!hasAudio_) {
+			stats_.idle();
 			return true;
+		}
 		const uint64_t ts = obs_source_get_audio_timestamp(source_);
-		if (ts == 0)
+		if (ts == 0) {
+			stats_.idle();
 			return true;
+		}
 		*newTs = ts;
 	}
+	bool counted = false;
 	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; ++mix) {
 		if (!(activeMixers & (1u << mix)))
 			continue;
@@ -646,9 +761,15 @@ bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint
 			mixComposite(mixes, mix, minTs);
 		else
 			mixPlain(mixes, mix);
+		if (!counted) {
+			stats_.block(mixes[mix].data, audio_output_get_channels(audio_), AUDIO_OUTPUT_FRAMES);
+			counted = true;
+		}
 	}
 	if (*newTs == 0)
 		*newTs = startTs;
+	else
+		stats_.timestamp(*newTs, audio_frames_to_ns(audio_output_get_sample_rate(audio_), AUDIO_OUTPUT_FRAMES));
 	return true;
 }
 

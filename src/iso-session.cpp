@@ -419,6 +419,21 @@ void IsoSession::removeEntry(obs_source_t *source, Status status, const std::str
 
 std::string IsoSession::segmentDir() const { return folder_ + "/" + gameFolder_; }
 
+// One line per file, so a bad-sounding recording can be traced from OBS's log alone.
+static void logAudioHealth(const std::string &name, const AudioHealth &a)
+{
+	char peak[24] = "silence only";
+	if (a.peakDb)
+		std::snprintf(peak, sizeof peak, "%.1f dB", *a.peakDb);
+	blog(a.flags.empty() ? LOG_INFO : LOG_WARNING,
+	     "[iso-recorder] %s: audio health: peak %s, %llu clipped, %.0f%% silent (longest %.2f s), %llu timing jumps, "
+	     "%zu setup changes",
+	     name.c_str(), peak, (unsigned long long)a.clipped, a.silentPct, a.longestSilence,
+	     (unsigned long long)a.jumps, a.changes.size());
+	for (const auto &f : a.flags)
+		blog(LOG_WARNING, "[iso-recorder] %s: %s", name.c_str(), f.c_str());
+}
+
 // Close one recorder into the manifest. Everything the recording needs is read off
 // the recorder before stop() clears its start time.
 void IsoSession::finishRecorder(SourceRecorder &rec, const std::string &name, Kind kind, const std::string &file,
@@ -441,7 +456,12 @@ void IsoSession::finishRecorder(SourceRecorder &rec, const std::string &name, Ki
 		reason = shortfallReason(missing);
 		blog(LOG_WARNING, "[iso-recorder] %s: %s", name.c_str(), reason.c_str());
 	}
-	finished_.push_back({name, kind, file, codec, offset, duration, status, reason, label, gameFolder_});
+	Recording done{name, kind, file, codec, offset, duration, status, reason, label, gameFolder_};
+	if (rec.hasAudioHealth()) {
+		done.audio = rec.health();
+		logAudioHealth(name, *done.audio);
+	}
+	finished_.push_back(std::move(done));
 }
 
 void IsoSession::recordFailure(const std::string &name, Kind kind, const std::string &label, const std::string &reason)
@@ -468,6 +488,8 @@ Recording IsoSession::liveRecording(const SourceRecorder &rec, const std::string
 	} else {
 		r.status = Status::Recording;
 	}
+	if (rec.hasAudioHealth())
+		r.audio = rec.health();
 	return r;
 }
 
@@ -827,6 +849,8 @@ std::string IsoSession::refreshManifest()
 	size_t failed = 0;
 	std::string message;
 	for (const auto &e : entries_) {
+		if (e.recorder)
+			e.recorder->pollSetup();
 		if (e.recorder && e.recorder->failed()) {
 			++failed;
 			message = (e.label.empty() ? e.name : e.label) + ": " + e.recorder->error();

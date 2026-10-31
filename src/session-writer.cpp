@@ -146,6 +146,48 @@ static void jsonStr(std::string &o, const std::string &v)
 		jsonString(o, v);
 }
 
+static void jsonStrings(std::string &o, const std::vector<std::string> &v)
+{
+	o += "[";
+	for (size_t i = 0; i < v.size(); ++i) {
+		if (i)
+			o += ", ";
+		jsonString(o, v[i]);
+	}
+	o += "]";
+}
+
+static void jsonAudio(std::string &o, const AudioHealth &a)
+{
+	char n[256];
+	o += ", \"audio\": { \"sampleRate\": ";
+	o += std::to_string(a.sampleRate);
+	o += ", \"sourceKind\": ";
+	jsonString(o, a.sourceKind);
+	o += ", \"device\": ";
+	jsonStr(o, a.device);
+	o += ", \"filters\": ";
+	jsonStrings(o, a.filters);
+	o += ", \"peakDb\": ";
+	if (a.peakDb) {
+		std::snprintf(n, sizeof n, "%.1f", *a.peakDb);
+		o += n;
+	} else {
+		o += "null";
+	}
+	std::snprintf(n, sizeof n,
+		      ", \"clipped\": %llu, \"timingJumps\": %llu, \"maxGapMs\": %.1f, \"silentPct\": %.1f, "
+		      "\"idlePct\": %.1f, \"longestSilence\": %.2f",
+		      (unsigned long long)a.clipped, (unsigned long long)a.jumps, a.maxGapMs, a.silentPct, a.idlePct,
+		      a.longestSilence);
+	o += n;
+	o += ", \"changes\": ";
+	jsonStrings(o, a.changes);
+	o += ", \"flags\": ";
+	jsonStrings(o, a.flags);
+	o += " }";
+}
+
 std::string buildSessionJson(const SessionInfo &info, const std::vector<Recording> &recs)
 {
 	std::string o;
@@ -192,6 +234,8 @@ std::string buildSessionJson(const SessionInfo &info, const std::vector<Recordin
 			o += ", \"error\": ";
 			jsonString(o, r.error);
 		}
+		if (r.audio)
+			jsonAudio(o, *r.audio);
 		o += " }";
 		o += (i + 1 < recs.size()) ? ",\n" : "\n";
 	}

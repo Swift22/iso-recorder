@@ -147,4 +147,11 @@ add_executable(test_wav_writer
 target_include_directories(test_wav_writer PRIVATE src)
 add_test(NAME wav_writer COMMAND test_wav_writer)
 
+add_executable(test_audio_stats
+  tests/test_audio_stats.cpp
+  src/session-writer.cpp
+)
+target_include_directories(test_audio_stats PRIVATE src)
+add_test(NAME audio_stats COMMAND test_audio_stats)
+
 install(DIRECTORY data/ DESTINATION data)

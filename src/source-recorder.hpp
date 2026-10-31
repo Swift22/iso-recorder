@@ -9,6 +9,9 @@
 #include <mutex>
 #include <string>
 
+#include <vector>
+
+#include "audio-stats.hpp"
 #include "session-writer.hpp"
 #include "wav-writer.hpp"
 
@@ -58,7 +61,27 @@ public:
 
 	void noteStart(uint64_t epochNs, bool atSessionStart = false);
 
+	// A recording that shares the stream's encoders never runs this recorder's own audio path,
+	// so it has no stats to report.
+	bool hasAudioHealth() const { return hasAudio_ && !shared_; }
+	// Called once a second on the main thread: logs and keeps any change to the source's
+	// device or filters since the last call.
+	void pollSetup();
+	// The audio setup and what the audio looked like; final once stop() has run.
+	AudioHealth health() const;
+
 private:
+	struct Setup {
+		std::string kind;
+		std::string device;
+		uint32_t sampleRate = 0;
+		std::vector<std::string> filters;
+		bool muted = false;
+	};
+	Setup readSetup() const;
+	// One line per thing that differs, for the log and session.json.
+	static std::vector<std::string> describeChange(const Setup &was, const Setup &now);
+
 	static void onPcm(void *param, size_t mixIdx, struct audio_data *data);
 	static void onOutputStopped(void *param, calldata_t *calldata);
 	static void onPacket(obs_output_t *output, struct encoder_packet *pkt, struct encoder_packet_time *pktTime,
@@ -124,6 +147,11 @@ private:
 	bool bgShowingInced_ = false;
 	mutable std::mutex errorMutex_;
 	std::string error_;
+
+	AudioStats stats_;
+	// Written and read on the main thread only, like the rest of the session's state.
+	Setup setup_;
+	std::vector<std::string> changes_;
 };
 
 } // namespace iso
