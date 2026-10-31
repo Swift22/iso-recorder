@@ -13,7 +13,7 @@ struct AudioCounts {
 	uint64_t silentTicks = 0; // real ticks whose samples were all exactly zero
 	uint64_t longestSilentTicks = 0;
 	uint64_t clipped = 0; // samples at or past full scale
-	uint64_t jumps = 0;   // source timestamps that went backwards or skipped ahead
+	uint64_t jumps = 0;   // blocks repeated, skipped or out of step with the clock
 	float peak = 0.0f;    // linear, 1.0 is full scale
 	double maxGapMs = 0.0;
 };
@@ -23,7 +23,14 @@ struct AudioCounts {
 // OBS audio thread writes; any thread may read counts().
 class AudioStats {
 public:
-	void idle() { idle_.fetch_add(1, std::memory_order_relaxed); }
+	void idle()
+	{
+		idle_.fetch_add(1, std::memory_order_relaxed);
+		last_ = 0; // a source coming back after a pause is not a jump
+	}
+
+	// A block the recorder had to make up (nothing queued) or throw away (queue full).
+	void slip() { jumps_.fetch_add(1, std::memory_order_relaxed); }
 
 	void block(const float *const *planes, size_t channels, size_t frames)
 	{
@@ -52,12 +59,13 @@ public:
 		}
 	}
 
-	// A source's own audio clock moves one tick per tick; more than two ticks off means audio went missing or repeated.
+	// A source's own audio clock moves exactly one tick per tick: no move is a repeated block,
+	// two ticks a skipped one.
 	void timestamp(uint64_t ts, uint64_t tickNs)
 	{
 		if (last_ != 0) {
 			const uint64_t gap = ts > last_ ? ts - last_ : last_ - ts;
-			if (ts < last_ || gap > 2 * tickNs) {
+			if (ts <= last_ || gap < tickNs / 2 || gap > tickNs + tickNs / 2) {
 				jumps_.fetch_add(1, std::memory_order_relaxed);
 				const double ms = (double)gap / 1e6;
 				if (ms > maxGapMs_.load(std::memory_order_relaxed))

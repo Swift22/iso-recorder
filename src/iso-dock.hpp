@@ -29,6 +29,9 @@ public:
 	void refreshSessionConfig();
 	// OBS is closing: stop ticking and let go of every source while they still exist.
 	void shutdown();
+	// Empties the lists and lets go of every source, so OBS can unload them; the next
+	// refresh lists the new ones.
+	void releaseSources();
 
 private slots:
 	void onRecordClicked();

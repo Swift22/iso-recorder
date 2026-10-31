@@ -665,6 +665,11 @@ void IsoDock::shutdown()
 {
 	timer_->stop();
 	saveSettings();
+	releaseSources();
+}
+
+void IsoDock::releaseSources()
+{
 	updating_ = true;
 	picture_->clear();
 	sound_->clear();

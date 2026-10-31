@@ -93,6 +93,10 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 			g_dock->setStatus(QStringLiteral(
 				"Stopped: the scene collection changed. Press Record to carry on in the same folder."));
 		}
+		// Any reference still held here keeps the old collection's sources alive, and OBS
+		// then refuses the change and quits.
+		g_session->releaseSources();
+		g_dock->releaseSources();
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 		g_dock->refreshSources();
@@ -105,6 +109,9 @@ static void onFrontendEvent(enum obs_frontend_event event, void *)
 		// still whole, which is where a recording has to be closed.
 		if (g_session->active())
 			g_session->stop();
+		// ClearSceneData() also needs every reference back, or it reports the sources as leaked.
+		g_session->releaseSources();
+		g_dock->shutdown();
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		if (g_session->active())

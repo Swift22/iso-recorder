@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "audio-stats.hpp"
+#include "block-queue.hpp"
 #include "session-writer.hpp"
 #include "wav-writer.hpp"
 
@@ -83,6 +84,8 @@ private:
 	static std::vector<std::string> describeChange(const Setup &was, const Setup &now);
 
 	static void onPcm(void *param, size_t mixIdx, struct audio_data *data);
+	static void onObsTick(void *param, size_t mixIdx, struct audio_data *data);
+	void captureTick();
 	static void onOutputStopped(void *param, calldata_t *calldata);
 	static void onPacket(obs_output_t *output, struct encoder_packet *pkt, struct encoder_packet_time *pktTime,
 			     void *param);
@@ -90,12 +93,14 @@ private:
 				 uint32_t activeMixers, struct audio_output_data *mixes);
 	bool fillAudio(uint64_t startTs, uint64_t endTs, uint64_t *newTs, uint32_t activeMixers,
 		       struct audio_output_data *mixes);
-	void mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t minTs);
-	void mixPlain(struct audio_output_data *mixes, size_t mixIdx);
+	void mixComposite(float *const *out, uint64_t minTs);
+	void mixPlain(float *const *out);
 	// Marks the recorder failed with msg and copies it to *error; always false.
 	void setError(std::string msg);
 	bool fail(std::string msg, std::string *error);
-	bool openAudio(uint32_t samplesPerSec);
+	// Opens the recorder's audio at OBS's own rate and starts queueing OBS's blocks for it.
+	bool openAudio();
+	void closeAudio();
 	bool openVideoPipeline(const std::string &encoderId, const char *outputId);
 	void closeVideoPipeline();
 	bool isComposite() const
@@ -149,6 +154,9 @@ private:
 	std::string error_;
 
 	AudioStats stats_;
+	BlockQueue queue_;
+	BlockQueue::Block captured_; // OBS's audio thread only
+	BlockQueue::Block popped_;   // the recorder's audio thread only
 	// Written and read on the main thread only, like the rest of the session's state.
 	Setup setup_;
 	std::vector<std::string> changes_;

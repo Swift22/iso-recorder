@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <utility>
 
 namespace iso {
@@ -235,16 +236,31 @@ bool SourceRecorder::fail(std::string msg, std::string *error)
 	return false;
 }
 
-bool SourceRecorder::openAudio(uint32_t samplesPerSec)
+static_assert(BlockQueue::kFrames == AUDIO_OUTPUT_FRAMES, "a queued block is one OBS audio tick");
+
+bool SourceRecorder::openAudio()
 {
 	struct audio_output_info oi{};
 	oi.name = name_.c_str();
 	oi.speakers = SPEAKERS_STEREO;
-	oi.samples_per_sec = samplesPerSec;
+	// The same rate as OBS, so the recorder ticks exactly as often as OBS fills the queue.
+	oi.samples_per_sec = audio_output_get_sample_rate(obs_get_audio());
 	oi.format = AUDIO_FORMAT_FLOAT_PLANAR;
 	oi.input_param = this;
 	oi.input_callback = onAudioInput;
-	return audio_output_open(&audio_, &oi) == AUDIO_OUTPUT_SUCCESS;
+	if (audio_output_open(&audio_, &oi) != AUDIO_OUTPUT_SUCCESS)
+		return false;
+	queue_.clear();
+	obs_add_raw_audio_callback(0, nullptr, onObsTick, this);
+	return true;
+}
+
+void SourceRecorder::closeAudio()
+{
+	// Returns once OBS's audio thread is out of onObsTick, so nothing touches the queue after.
+	obs_remove_raw_audio_callback(0, onObsTick, this);
+	audio_output_close(audio_);
+	audio_ = nullptr;
 }
 
 bool SourceRecorder::start(std::string *error)
@@ -259,18 +275,15 @@ bool SourceRecorder::start(std::string *error)
 		     filters.empty() ? "(none)" : filters.c_str());
 	}
 	if (!hasVideo_) {
-		constexpr uint32_t kWavRate = 48000;
-		if (!openAudio(kWavRate)) {
+		if (!openAudio()) {
 			return fail("the audio device did not open", error);
 		}
-		if (!wav_.open(path_, kWavRate, 2, 24)) {
-			audio_output_close(audio_);
-			audio_ = nullptr;
+		if (!wav_.open(path_, audio_output_get_sample_rate(audio_), 2, 24)) {
+			closeAudio();
 			return fail("could not write the WAV file", error);
 		}
 		if (!audio_output_connect(audio_, 0, nullptr, onPcm, this)) {
-			audio_output_close(audio_);
-			audio_ = nullptr;
+			closeAudio();
 			wav_.close();
 			return fail("the audio device did not accept the recorder", error);
 		}
@@ -410,7 +423,7 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId, const char 
 
 	// An OBS AV output refuses to start without both encoders, so even a
 	// source with no sound gets an audio track; the tap writes silence.
-	if (!openAudio(audio_output_get_sample_rate(obs_get_audio()))) {
+	if (!openAudio()) {
 		setError("the audio device did not open");
 		return false;
 	}
@@ -496,10 +509,8 @@ void SourceRecorder::closeVideoPipeline()
 		obs_encoder_release(videoEnc_);
 		videoEnc_ = nullptr;
 	}
-	if (audio_) {
-		audio_output_close(audio_);
-		audio_ = nullptr;
-	}
+	if (audio_)
+		closeAudio();
 	started_ = false;
 	outputStarted_ = false;
 }
@@ -571,8 +582,7 @@ void SourceRecorder::stop()
 	if (audio_) {
 		if (!hasVideo_)
 			audio_output_disconnect(audio_, 0, onPcm, this);
-		audio_output_close(audio_);
-		audio_ = nullptr;
+		closeAudio();
 	}
 	if (showingInced_) {
 		obs_source_dec_showing(source_);
@@ -698,28 +708,67 @@ bool SourceRecorder::onAudioInput(void *param, uint64_t startTs, uint64_t endTs,
 	return self->fillAudio(startTs, endTs, newTs, activeMixers, mixes);
 }
 
-void SourceRecorder::mixPlain(struct audio_output_data *mixes, size_t mixIdx)
+void SourceRecorder::onObsTick(void *param, size_t, struct audio_data *)
+{
+	static_cast<SourceRecorder *>(param)->captureTick();
+}
+
+void SourceRecorder::mixPlain(float *const *out)
 {
 	struct obs_source_audio_mix audio {};
 	obs_source_get_audio_mix(source_, &audio);
-	for (size_t ch = 0; ch < audio_output_get_channels(audio_); ++ch) {
-		float *out = mixes[mixIdx].data[ch];
+	for (size_t ch = 0; ch < BlockQueue::kChannels; ++ch) {
 		const float *in = audio.output[0].data[ch];
-		if (!in || !out)
+		if (!in)
 			continue;
 		for (size_t f = 0; f < AUDIO_OUTPUT_FRAMES; ++f)
-			out[f] = std::fmax(-1.0f, std::fmin(1.0f, out[f] + in[f]));
+			out[ch][f] = std::fmax(-1.0f, std::fmin(1.0f, in[f]));
 	}
 }
 
-void SourceRecorder::mixComposite(struct audio_output_data *mixes, size_t mixIdx, uint64_t minTs)
+void SourceRecorder::mixComposite(float *const *out, uint64_t minTs)
 {
 	MixCtx ctx {};
 	ctx.audio = audio_;
 	ctx.minTs = minTs;
-	for (size_t ch = 0; ch < MAX_AUDIO_CHANNELS; ++ch)
-		ctx.target[ch] = mixes[mixIdx].data[ch];
+	for (size_t ch = 0; ch < BlockQueue::kChannels; ++ch)
+		ctx.target[ch] = out[ch];
 	obs_source_enum_active_tree(source_, mixChild, &ctx);
+}
+
+// Runs on OBS's audio thread right after OBS filled every source's block for this tick, so the
+// block read here is this tick's, read once.
+void SourceRecorder::captureTick()
+{
+	BlockQueue::Block &b = captured_;
+	std::memset(b.data, 0, sizeof b.data);
+	b.ts = 0;
+	float *const out[BlockQueue::kChannels] = {b.data[0], b.data[1]};
+	bool live = false;
+	if (obs_source_audio_pending(source_)) {
+		// nothing this tick
+	} else if (isComposite()) {
+		uint64_t minTs = 0;
+		obs_source_enum_active_tree(source_, calcMinTs, &minTs);
+		mixComposite(out, minTs);
+		b.ts = minTs ? minTs : obs_source_get_audio_timestamp(source_);
+		live = true;
+	} else if (hasAudio_) {
+		b.ts = obs_source_get_audio_timestamp(source_);
+		if (b.ts) {
+			mixPlain(out);
+			live = true;
+		}
+	}
+	if (live) {
+		stats_.block(out, BlockQueue::kChannels, AUDIO_OUTPUT_FRAMES);
+		if (b.ts)
+			stats_.timestamp(b.ts, audio_frames_to_ns(audio_output_get_sample_rate(audio_), AUDIO_OUTPUT_FRAMES));
+	} else {
+		stats_.idle();
+	}
+	if (!queue_.push(b))
+		stats_.slip();
 }
 
 bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint32_t activeMixers,
@@ -732,44 +781,21 @@ bool SourceRecorder::fillAudio(uint64_t startTs, uint64_t, uint64_t *newTs, uint
 	// real-time silence, which is what a live recorder should do when a
 	// source has nothing to say yet.
 	*newTs = startTs;
-	if (obs_source_audio_pending(source_)) {
-		stats_.idle();
+	const BlockQueue::Pop got = queue_.pop(popped_);
+	if (got == BlockQueue::Pop::Empty)
+		stats_.slip();
+	if (got != BlockQueue::Pop::Ok)
 		return true;
-	}
-	const bool composite = isComposite();
-	uint64_t minTs = 0;
-	if (composite) {
-		obs_source_enum_active_tree(source_, calcMinTs, &minTs);
-		*newTs = minTs ? minTs : obs_source_get_audio_timestamp(source_);
-	} else {
-		if (!hasAudio_) {
-			stats_.idle();
-			return true;
-		}
-		const uint64_t ts = obs_source_get_audio_timestamp(source_);
-		if (ts == 0) {
-			stats_.idle();
-			return true;
-		}
-		*newTs = ts;
-	}
-	bool counted = false;
+	if (popped_.ts)
+		*newTs = popped_.ts;
+	const size_t chans = std::min(audio_output_get_channels(audio_), BlockQueue::kChannels);
 	for (size_t mix = 0; mix < MAX_AUDIO_MIXES; ++mix) {
 		if (!(activeMixers & (1u << mix)))
 			continue;
-		if (composite)
-			mixComposite(mixes, mix, minTs);
-		else
-			mixPlain(mixes, mix);
-		if (!counted) {
-			stats_.block(mixes[mix].data, audio_output_get_channels(audio_), AUDIO_OUTPUT_FRAMES);
-			counted = true;
-		}
+		for (size_t ch = 0; ch < chans; ++ch)
+			if (mixes[mix].data[ch])
+				std::memcpy(mixes[mix].data[ch], popped_.data[ch], sizeof popped_.data[ch]);
 	}
-	if (*newTs == 0)
-		*newTs = startTs;
-	else
-		stats_.timestamp(*newTs, audio_frames_to_ns(audio_output_get_sample_rate(audio_), AUDIO_OUTPUT_FRAMES));
 	return true;
 }
 

@@ -399,6 +399,14 @@ bool IsoSession::arm(obs_source_t *source, std::string *error)
 	return ok;
 }
 
+void IsoSession::releaseSources()
+{
+	for (auto &e : entries_)
+		if (e.source)
+			obs_source_release(e.source);
+	entries_.clear();
+}
+
 // Unticking is a decision, not a fault: the file it closes is complete.
 void IsoSession::disarm(obs_source_t *source)
 {

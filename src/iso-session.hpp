@@ -77,6 +77,9 @@ public:
 	std::string refreshManifest();
 	bool arm(obs_source_t *source, std::string *error);
 	void disarm(obs_source_t *source);
+	// Lets go of every ticked source while idle, so OBS can unload them on a scene collection
+	// change; the dock ticks the remembered names again in the new collection.
+	void releaseSources();
 	void onSceneChanged(obs_source_t *scene);
 	double elapsedSeconds() const;
 	const std::string &gameFolder() const { return gameFolder_; }

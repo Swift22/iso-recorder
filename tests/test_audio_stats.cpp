@@ -1,4 +1,5 @@
 #include "audio-stats.hpp"
+#include "block-queue.hpp"
 #include "session-writer.hpp"
 
 #include <cstdio>
@@ -42,12 +43,38 @@ int main()
 	AudioStats t;
 	t.timestamp(1000 * tick, tick);
 	t.timestamp(1001 * tick, tick);
-	t.timestamp(1002 * tick + tick / 2, tick); // jitter inside two ticks is normal
+	t.timestamp(1002 * tick + tick / 4, tick); // rounding inside half a tick is normal
 	CHECK(t.counts().jumps == 0);
-	t.timestamp(1010 * tick, tick);            // skipped ahead
-	t.timestamp(1005 * tick, tick);            // went backwards
+	t.timestamp(1002 * tick + tick / 4, tick); // the same block again
+	t.timestamp(1004 * tick + tick / 4, tick); // one block skipped
 	CHECK(t.counts().jumps == 2);
+	t.idle();
+	t.timestamp(1010 * tick, tick); // back after a pause: not a jump
+	t.timestamp(1005 * tick, tick); // went backwards
+	CHECK(t.counts().jumps == 3);
 	CHECK(t.counts().maxGapMs > 100.0);
+	t.slip();
+	CHECK(t.counts().jumps == 4);
+
+	// Every block pushed comes out once, in order; the first pops wait for two blocks.
+	BlockQueue q;
+	BlockQueue::Block in{}, out{};
+	CHECK(q.pop(out) == BlockQueue::Pop::Priming);
+	in.ts = 1;
+	CHECK(q.push(in));
+	CHECK(q.pop(out) == BlockQueue::Pop::Priming);
+	in.ts = 2;
+	q.push(in);
+	CHECK(q.pop(out) == BlockQueue::Pop::Ok && out.ts == 1);
+	CHECK(q.pop(out) == BlockQueue::Pop::Ok && out.ts == 2);
+	CHECK(q.pop(out) == BlockQueue::Pop::Empty);
+	bool dropped = false;
+	for (uint64_t i = 10; i < 10 + BlockQueue::kCapacity + 1; ++i) {
+		in.ts = i;
+		dropped |= !q.push(in);
+	}
+	CHECK(dropped);
+	CHECK(q.pop(out) == BlockQueue::Pop::Ok && out.ts == 11); // the oldest went
 
 	Recording r;
 	r.source = "Mic/Aux";
