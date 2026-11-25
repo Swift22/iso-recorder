@@ -171,6 +171,9 @@ SessionConfig loadConfig()
 	const char *size = obs_data_get_string(data, "videoSize");
 	if (size && *size)
 		cfg.videoSize = size;
+	const char *quality = obs_data_get_string(data, "videoQuality");
+	if (quality && *quality)
+		cfg.videoQuality = quality;
 	if (obs_data_has_user_value(data, "withStream")) {
 		cfg.withStream = obs_data_get_bool(data, "withStream");
 	}
@@ -189,6 +192,7 @@ void saveConfig(const SessionConfig &cfg)
 	obs_data_set_string(data, "basePath", cfg.basePath.c_str());
 	obs_data_set_string(data, "videoEncoderId", cfg.videoEncoderId.c_str());
 	obs_data_set_string(data, "videoSize", cfg.videoSize.c_str());
+	obs_data_set_string(data, "videoQuality", cfg.videoQuality.c_str());
 	obs_data_set_bool(data, "withStream", cfg.withStream);
 	obs_data_set_bool(data, "recordComposite", cfg.recordComposite);
 	obs_data_set_bool(data, "withRecording", cfg.withRecording);

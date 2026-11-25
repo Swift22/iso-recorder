@@ -537,7 +537,7 @@ bool IsoSession::startComposite(std::string *error, bool atSessionStart)
 	compositeFile_ = makeFilename(Kind::Video, 0, kSessionName, 1, codec);
 	composite_ = std::make_unique<SourceRecorder>(scene, kSessionName, segmentDir() + "/" + compositeFile_,
 						      config_.videoEncoderId, videoSettings_, audioSettings_,
-						      config_.capWidth, config_.capHeight, 1);
+						      config_.capWidth, config_.capHeight, 1, config_.videoQuality != "stream");
 	obs_source_release(scene);
 	std::string err;
 	const bool started = share ? composite_->startShared(streamVideo, streamAudio, &err) : composite_->start(&err);
@@ -582,7 +582,8 @@ bool IsoSession::startEntry(Entry &e, std::string *error, bool atSessionStart)
 	const std::string path = segmentDir() + "/" + file;
 	const uint32_t divisor = isHalfRate(e.source) ? 2u : 1u;
 	e.recorder = std::make_unique<SourceRecorder>(e.source, e.name, path, config_.videoEncoderId, videoSettings_,
-						      audioSettings_, config_.capWidth, config_.capHeight, divisor);
+						      audioSettings_, config_.capWidth, config_.capHeight, divisor,
+						      config_.videoQuality != "stream");
 	std::string err;
 	if (!e.recorder->start(&err)) {
 		recordFailure(e.name, e.kind, e.label, err);
@@ -719,6 +720,7 @@ void IsoSession::stop(bool canResume)
 	}
 	entries_.clear();
 	closeComposite();
+	removeSilentAudio();
 	if (globalAudioHeld_) {
 		obs_remove_raw_audio_callback(0, onGlobalAudioKeepalive, nullptr);
 		globalAudioHeld_ = false;
@@ -735,6 +737,35 @@ void IsoSession::stop(bool canResume)
 	// and the live entries are gone, so a later session's pre-arm cannot inherit
 	// a stale index/segment.
 	resetNumbering();
+}
+
+// A sound source left muted for a whole stream (Desktop Audio, most often) writes gigabytes
+// of zeros. Its entry stays in the manifest, so the editor still sees it was recorded.
+void IsoSession::removeSilentAudio()
+{
+	for (Recording &r : finished_) {
+		if (r.kind != Kind::Audio || r.status == Status::Failed || r.removed || r.file.empty() || !r.audio ||
+		    r.audio->peakDb) {
+			continue;
+		}
+		const std::string path = folder_ + "/" + (r.folder.empty() ? r.file : r.folder + "/" + r.file);
+		if (os_unlink(path.c_str()) != 0) {
+			blog(LOG_WARNING, "[iso-recorder] %s: could not remove %s, which held only silence",
+			     r.source.c_str(), path.c_str());
+			note_ = r.file + " held only silence and could not be removed.";
+			continue;
+		}
+		r.removed = true;
+		blog(LOG_INFO, "[iso-recorder] %s: removed %s, which held only silence", r.source.c_str(),
+		     path.c_str());
+	}
+}
+
+std::string IsoSession::takeNote()
+{
+	std::string note;
+	note.swap(note_);
+	return note;
 }
 
 void IsoSession::resetNumbering()

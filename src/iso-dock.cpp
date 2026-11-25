@@ -211,6 +211,12 @@ static void fillSizes(QComboBox *box)
 	box->addItem(QStringLiteral("480p"), QString("480"));
 }
 
+static void fillQualities(QComboBox *box)
+{
+	box->addItem(QObject::tr("High"), QString("high"));
+	box->addItem(QObject::tr("Same as the stream"), QString("stream"));
+}
+
 static QString formatElapsed(double seconds)
 {
 	const int total = (int)seconds;
@@ -241,6 +247,8 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	fillEncoders(encoder_);
 	size_ = new QComboBox(this);
 	fillSizes(size_);
+	quality_ = new QComboBox(this);
+	fillQualities(quality_);
 	withStream_ = new QCheckBox(tr("Start and stop with the stream"), this);
 	withStream_->setChecked(true);
 	withRecording_ = new QCheckBox(QStringLiteral("Start with OBS's Record"), this);
@@ -265,6 +273,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 
 	auto *encoderLabel = new QLabel(tr("Video encoder"), this);
 	auto *sizeLabel = new QLabel(tr("Recording size"), this);
+	auto *qualityLabel = new QLabel(tr("Video quality"), this);
 	auto *audioNote = new QLabel(tr("Audio is saved as 24-bit WAV."), this);
 	audioNote->setStyleSheet(QStringLiteral("color: #808080;"));
 
@@ -277,6 +286,8 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	layout->addWidget(encoder_);
 	layout->addWidget(sizeLabel);
 	layout->addWidget(size_);
+	layout->addWidget(qualityLabel);
+	layout->addWidget(quality_);
 	layout->addWidget(audioNote);
 	layout->addWidget(withStream_);
 	layout->addWidget(withRecording_);
@@ -302,6 +313,7 @@ IsoDock::IsoDock(IsoSession *session, QWidget *parent) : QWidget(parent), sessio
 	connect(path_, &QLineEdit::editingFinished, this, &IsoDock::onConfigChanged);
 	connect(encoder_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(size_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
+	connect(quality_, &QComboBox::currentIndexChanged, this, &IsoDock::onConfigChanged);
 	connect(withStream_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 	connect(withRecording_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
 	connect(recordScene_, &QCheckBox::toggled, this, &IsoDock::onConfigChanged);
@@ -630,8 +642,11 @@ void IsoDock::onTick()
 {
 	refreshSources();
 	const std::string failure = session_->refreshManifest();
+	const std::string note = session_->takeNote();
 	if (!failure.empty()) {
 		setStatus(tr("Source failed: ") + QString::fromStdString(failure));
+	} else if (!note.empty()) {
+		setStatus(QString::fromStdString(note));
 	} else {
 		for (int row = 0; row < picture_->count(); ++row) {
 			auto *source = sourceOf(picture_->item(row));
@@ -726,6 +741,8 @@ void IsoDock::applyConfig(const SessionConfig &cfg)
 	encoder_->setCurrentIndex(encoderIndex < 0 ? 0 : encoderIndex);
 	const int sizeIndex = size_->findData(QString::fromStdString(cfg.videoSize));
 	size_->setCurrentIndex(sizeIndex < 0 ? 0 : sizeIndex);
+	const int qualityIndex = quality_->findData(QString::fromStdString(cfg.videoQuality));
+	quality_->setCurrentIndex(qualityIndex < 0 ? 0 : qualityIndex);
 	withStream_->setChecked(cfg.withStream);
 	withRecording_->setChecked(cfg.withRecording);
 	recordScene_->setChecked(cfg.recordComposite);
@@ -738,6 +755,7 @@ SessionConfig IsoDock::configFromWidgets() const
 	cfg.basePath = path_->text().toStdString();
 	cfg.videoEncoderId = encoder_->currentData().toString().toStdString();
 	cfg.videoSize = size_->currentData().toString().toStdString();
+	cfg.videoQuality = quality_->currentData().toString().toStdString();
 	cfg.withStream = withStream_->isChecked();
 	cfg.withRecording = withRecording_->isChecked();
 	cfg.recordComposite = recordScene_->isChecked();
@@ -784,7 +802,8 @@ SessionConfig IsoDock::resolveConfig(SessionConfig cfg, obs_data_t **videoSettin
 	// silently drop the stream's rate control.
 	*videoSettings = copyEncoderSettings(streamVideo);
 	*audioSettings = copyEncoderSettings(streamAudio);
-	if (*videoSettings) {
+	cfg.bitrateBitsPerSec = kHighQualityBitsPerSec;
+	if (*videoSettings && cfg.videoQuality == "stream") {
 		const int64_t kbps = obs_data_get_int(*videoSettings, "bitrate");
 		if (kbps > 0) {
 			cfg.bitrateBitsPerSec = (uint64_t)kbps * 1000ull;

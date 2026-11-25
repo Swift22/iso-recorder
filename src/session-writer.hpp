@@ -42,6 +42,8 @@ struct Recording {
 	// was never split. The file itself is always relative to this folder.
 	std::string folder;
 	std::optional<AudioHealth> audio;
+	// The file held only silence and was deleted at the stop.
+	bool removed = false;
 };
 
 struct VideoFormat {

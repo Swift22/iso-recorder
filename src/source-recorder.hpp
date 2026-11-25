@@ -26,9 +26,11 @@ bool hasPicture(obs_source_t *source);
 class SourceRecorder {
 public:
 	// frameRateDivisor is 1 for full rate or 2 for half; a shared encoder ignores it.
+	// highQuality records at a constant quality instead of the stream's bitrate; a shared
+	// encoder ignores it too.
 	SourceRecorder(obs_source_t *source, std::string name, std::string path, std::string videoEncoderId,
 		       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth, uint32_t capHeight,
-		       uint32_t frameRateDivisor);
+		       uint32_t frameRateDivisor, bool highQuality);
 	~SourceRecorder();
 
 	bool start(std::string *error);
@@ -119,6 +121,7 @@ private:
 	obs_data_t *audioSettings_ = nullptr; // owned copy
 	uint32_t capWidth_ = 0;               // recording-size cap; 0 means the source's own size
 	uint32_t capHeight_ = 0;
+	bool highQuality_ = true;
 	uint32_t divisor_ = 1;   // drops to 1 if the encoder refused the divisor, so the file is judged at full rate
 	uint32_t baseWidth_ = 0; // the even-rounded source size the view was built for
 	uint32_t baseHeight_ = 0;

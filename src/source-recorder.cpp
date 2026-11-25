@@ -32,13 +32,14 @@ static obs_data_t *cloneData(obs_data_t *src)
 
 SourceRecorder::SourceRecorder(obs_source_t *source, std::string name, std::string path, std::string videoEncoderId,
 			       obs_data_t *videoSettings, obs_data_t *audioSettings, uint32_t capWidth,
-			       uint32_t capHeight, uint32_t frameRateDivisor)
+			       uint32_t capHeight, uint32_t frameRateDivisor, bool highQuality)
 	: source_(obs_source_get_ref(source)),
 	  name_(std::move(name)),
 	  path_(std::move(path)),
 	  videoEncoderId_(std::move(videoEncoderId)),
 	  capWidth_(capWidth),
 	  capHeight_(capHeight),
+	  highQuality_(highQuality),
 	  divisor_(frameRateDivisor)
 {
 	const uint32_t flags = obs_source_get_output_flags(source_);
@@ -378,6 +379,46 @@ bool SourceRecorder::start(std::string *error)
 	return true;
 }
 
+// The quantizer a constant-quality recording holds. Under about 23 a picture stays clean;
+// 20 is obs-nvenc's own default and leaves room before softness shows.
+constexpr int kQualityQp = 20;
+// VideoToolbox's quality runs 0-100, higher is better. OBS's own recording presets use 50
+// ("high quality") and 70 ("indistinguishable") where the others use 23 and 16, so 60 sits
+// where 20 does.
+constexpr int kAppleQuality = 60;
+
+static bool contains(const std::string &s, const char *part)
+{
+	return s.find(part) != std::string::npos;
+}
+
+// Swaps the stream's bitrate for a constant quality, in the keys each encoder reads. "cbr" is
+// a deprecated switch that forces CBR in x264 and QSV whatever rate_control says.
+static bool setConstantQuality(obs_data_t *s, const std::string &id)
+{
+	obs_data_erase(s, "cbr");
+	if (id == "obs_x264") {
+		obs_data_set_string(s, "rate_control", "CRF");
+		obs_data_set_int(s, "crf", kQualityQp);
+		return true;
+	}
+	if (id.rfind("com.apple.videotoolbox", 0) == 0) {
+		obs_data_set_string(s, "rate_control", "CRF");
+		obs_data_set_int(s, "quality", kAppleQuality);
+		return true;
+	}
+	if (contains(id, "nvenc") || contains(id, "qsv") || contains(id, "amf")) {
+		// obs-nvenc compares "CQP" case-sensitively. QSV reads qpi/qpp/qpb on older settings.
+		obs_data_set_string(s, "rate_control", "CQP");
+		obs_data_set_int(s, "cqp", kQualityQp);
+		obs_data_set_int(s, "qpi", kQualityQp);
+		obs_data_set_int(s, "qpp", kQualityQp);
+		obs_data_set_int(s, "qpb", kQualityQp);
+		return true;
+	}
+	return false;
+}
+
 bool SourceRecorder::openVideoPipeline(const std::string &encoderId, const char *outputId)
 {
 	setError({});
@@ -386,18 +427,26 @@ bool SourceRecorder::openVideoPipeline(const std::string &encoderId, const char 
 	// quality settings (slow preset, two-pass, lookahead, B-frames) cost several plain
 	// encodes each, and copying them to every recording starved the stream of frames.
 	obs_data_t *encoderSettings = videoSettings_;
-	obs_data_t *light = nullptr;
-	if (encoderId.rfind("obs_nvenc", 0) == 0) {
-		light = videoSettings_ ? cloneData(videoSettings_) : obs_data_create();
-		obs_data_set_string(light, "preset", "p1");
-		obs_data_set_string(light, "multipass", "disabled");
-		obs_data_set_bool(light, "lookahead", false);
-		obs_data_set_int(light, "bf", 0);
-		encoderSettings = light;
+	obs_data_t *own = nullptr;
+	const bool nvenc = encoderId.rfind("obs_nvenc", 0) == 0;
+	if (nvenc || highQuality_) {
+		own = videoSettings_ ? cloneData(videoSettings_) : obs_data_create();
+		encoderSettings = own;
+	}
+	if (nvenc) {
+		obs_data_set_string(own, "preset", "p1");
+		obs_data_set_string(own, "multipass", "disabled");
+		obs_data_set_bool(own, "lookahead", false);
+		obs_data_set_int(own, "bf", 0);
+	}
+	if (highQuality_ && !setConstantQuality(own, encoderId)) {
+		blog(LOG_WARNING,
+		     "[iso-recorder] %s: the %s encoder has no quality setting the recorder knows; recording at the stream's bitrate",
+		     name_.c_str(), encoderId.c_str());
 	}
 	videoEnc_ = obs_video_encoder_create(encoderId.c_str(), name_.c_str(), encoderSettings, nullptr);
-	if (light) {
-		obs_data_release(light);
+	if (own) {
+		obs_data_release(own);
 	}
 	if (!videoEnc_) {
 		setError("the encoder did not open");

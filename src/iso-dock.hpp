@@ -62,6 +62,7 @@ private:
 	QPushButton *browse_ = nullptr;
 	QComboBox *encoder_ = nullptr;
 	QComboBox *size_ = nullptr;
+	QComboBox *quality_ = nullptr;
 	QCheckBox *withStream_ = nullptr;
 	QCheckBox *withRecording_ = nullptr;
 	QCheckBox *recordScene_ = nullptr;

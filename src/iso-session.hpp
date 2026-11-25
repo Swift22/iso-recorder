@@ -19,6 +19,10 @@ namespace iso {
 // own encode leaves room for three.
 constexpr size_t kEncoderWarnThreshold = 3;
 
+// A constant-quality file has no set bitrate, so the free-space check assumes one per
+// video: TBD.
+constexpr uint64_t kHighQualityBitsPerSec = 12000ull * 1000ull;
+
 // What a source's row says at a glance, so the list is readable without hovering.
 enum class RowState { Idle, WillRecord, Recording, Failed, Aborted };
 
@@ -39,7 +43,8 @@ struct SessionConfig {
 	std::string videoSize = "stream"; // "stream", "source", or a height: "2160".."480"
 	uint32_t capWidth = 0;            // resolved from videoSize once per session; 0 means no cap
 	uint32_t capHeight = 0;
-	uint64_t bitrateBitsPerSec = 6000ull * 1000ull; // drives the disk check in Task 9
+	std::string videoQuality = "high"; // "high" (constant quality) or "stream" (the stream's bitrate)
+	uint64_t bitrateBitsPerSec = kHighQualityBitsPerSec; // per video, for the free-space check
 	bool recordComposite = false;
 	bool withStream = true;
 	bool withRecording = true;
@@ -83,6 +88,9 @@ public:
 	void onSceneChanged(obs_source_t *scene);
 	double elapsedSeconds() const;
 	const std::string &gameFolder() const { return gameFolder_; }
+	// A problem the session hit while no call was waiting on it, such as a silent file it
+	// could not remove at the stop; empty when there is none. Reading it clears it.
+	std::string takeNote();
 
 	bool isArmed(obs_source_t *source) const;
 	bool isArmedAny() const { return !entries_.empty(); }
@@ -119,6 +127,8 @@ private:
 	// until then, so polling once a second is safe.
 	void dropRemovedSources();
 	void closeEntry(Entry &e, Status okStatus, const std::string &abortReason = {});
+	// Delete every finished WAV that held nothing but silence, keeping its manifest entry.
+	void removeSilentAudio();
 	// Stop a recorder and move its final state into finished_.
 	void finishRecorder(class SourceRecorder &rec, const std::string &name, Kind kind, const std::string &file,
 			    const std::string &label, Status okStatus, const std::string &abortReason = {});
@@ -159,6 +169,7 @@ private:
 	bool canResume_ = false; // the last stop was the Stop button, so Record continues it
 	StartedBy startedBy_ = StartedBy::Dock;
 	bool paused_ = false;
+	std::string note_;
 	struct PauseSpan {
 		uint64_t start = 0;
 		uint64_t end = 0; // 0 while the session is still paused

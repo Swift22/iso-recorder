@@ -238,9 +238,16 @@ stream's next keyframe, and its start offset is that frame's time. Without a str
 itself, as above.
 
 Every recording that encodes on NVENC uses light settings (preset P1, no multipass, no lookahead, no
-B-frames) at the stream's bitrate, whatever the stream uses. The stream and the recordings share one
-encoder chip, and the stream's quality settings copied to three or four full-canvas recordings
-starved the stream itself (measured on a viewer's RTX 4070 SUPER: 16% of stream frames skipped).
+B-frames), whatever the stream uses. The stream and the recordings share one encoder chip, and the
+stream's quality settings copied to three or four full-canvas recordings starved the stream itself
+(measured on a viewer's RTX 4070 SUPER: 16% of stream frames skipped).
+
+**Video quality** is its own setting, not the stream's. "High" (the default) records at a constant
+quality: QP 20 on NVENC, QSV and AMF, CRF 20 on x264 (including the fallback), quality 60 on
+VideoToolbox. "Same as the stream" keeps the stream's rate control and bitrate. A fixed bitrate
+gives every game a different quality: at the stream's 6 Mbps a hard game spent up to 20% of its
+time at QP 35 or worse, while an easy picture was padded out to the full rate. A file that shares
+the stream's encoder (`00_Session.mov` while live) is always the stream's quality.
 
 ### `session.json`
 
@@ -366,7 +373,8 @@ change what is ticked; the running session does not persist.
 ### Failure handling
 
 - **Before start:** the base path is checked — exists, writable, free space above a floor (the
-  estimated bytes for the armed selection at the chosen bitrate, plus headroom). Anything wrong refuses
+  estimated bytes for one hour of the armed selection at the stream's bitrate, or at an assumed
+  rate per video for "High" quality, plus headroom). Anything wrong refuses
   the start and names the problem in the dock. Never a silent partial start.
 - **Encoder cap:** the dock computes a warning when the armed selection exceeds what the machine is
   expected to encode (see Further Notes) and requires a confirmation, but does not refuse — the
@@ -381,7 +389,7 @@ change what is ticked; the running session does not persist.
 ### Encoder choice and the cost ceiling
 
 Default to the **same hardware encoder the stream uses**, discovered from the streaming output —
-its **id and its settings**, so the ISO files match the stream's bitrate and rate control. (Before
+its **id and its settings** (rate control is replaced by the video quality setting, above). (Before
 this change, "same as the stream" shared only the encoder id, and every ISO encoder ran the
 encoder's registered defaults.) Fall back to the platform's preferred hardware encoder
 (VideoToolbox on macOS, NVENC/QSV/AMF on Windows) and to `obs_x264` last. Overridable in the dock.

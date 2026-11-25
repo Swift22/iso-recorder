@@ -234,6 +234,8 @@ std::string buildSessionJson(const SessionInfo &info, const std::vector<Recordin
 			o += ", \"error\": ";
 			jsonString(o, r.error);
 		}
+		if (r.removed)
+			o += ", \"removed\": \"only silence\"";
 		if (r.audio)
 			jsonAudio(o, *r.audio);
 		o += " }";
@@ -274,6 +276,8 @@ std::string buildReadme(const SessionInfo &info, const std::vector<Recording> &r
 			desc += " (not recorded: " + r.error + ")";
 		else if (r.status == Status::Aborted && !r.error.empty())
 			desc += " (" + r.error + ")";
+		if (r.removed)
+			desc += " (only silence, so the file was removed)";
 		char line[512];
 		std::snprintf(line, sizeof line, "  %-*s%-14s%s\n", (int)fileWidth, file.c_str(),
 			      clock.c_str(), desc.c_str());

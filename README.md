@@ -97,7 +97,12 @@ Open it from OBS's **Docks** menu → **ISO Recorder**. One window holds everyth
   Recording size only ever scales a file down: pick 1080p and a source bigger than that is
   recorded at that height, keeping its shape, while one already smaller is left alone. It
   shrinks what is converted and encoded, not what each recording renders, so it buys back
-  encoder work rather than render work. Audio is always saved as 24-bit WAV. A hardware
+  encoder work rather than render work. **Video quality** is "High" by default: every
+  file keeps the same quality whatever the game, and its size follows the picture (a busy
+  game takes more space, a still avatar far less). "Same as the stream" records at the
+  stream's bitrate instead. Audio is always saved as 24-bit WAV, and a sound file that
+  held nothing but silence for its whole length is removed when the recording stops (its
+  line stays in `session.json` and `README.txt`). A hardware
   encoder can refuse a source it cannot handle (most often a picture smaller than its
   minimum frame size, such as a small avatar or overlay). That source falls back to
   `obs_x264` on its own rather than failing — the log says so when it happens.
