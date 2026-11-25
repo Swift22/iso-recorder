@@ -1,4 +1,4 @@
-ISO Recorder 0.8.1
+ISO Recorder 0.9.0
 One file per source, while you stream.
 =====================================================
 

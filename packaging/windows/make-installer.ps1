@@ -11,7 +11,7 @@
 param(
     [string]$Dll = "$PSScriptRoot\..\..\build-win\iso-recorder.dll",
     [string]$OutDir = "$PSScriptRoot\..\..\dist",
-    [string]$Version = "0.8.1"
+    [string]$Version = "0.9.0"
 )
 
 $ErrorActionPreference = "Stop"
