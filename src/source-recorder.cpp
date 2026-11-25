@@ -380,7 +380,7 @@ bool SourceRecorder::start(std::string *error)
 }
 
 // The quantizer a constant-quality recording holds. Under about 23 a picture stays clean. On a
-// hard 1080p60 game at NVENC p1, 20 cost 40 Mbps, 22 about 32 and 23 28 (measured 2026-11-25).
+// hard 1080p60 game at NVENC p1, 20 cost 40 Mbps, 22 31.5 and 23 28 (measured 2026-11-25).
 constexpr int kQualityQp = 22;
 // VideoToolbox's quality runs 0-100, higher is better. OBS's own recording presets use 50
 // ("high quality") and 70 ("indistinguishable") where the others use 23 and 16, so 55 sits

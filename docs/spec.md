@@ -244,9 +244,10 @@ stream's quality settings copied to three or four full-canvas recordings starved
 
 **Video quality** is its own setting, not the stream's. "High" (the default) records at a constant
 quality: QP 22 on NVENC, QSV and AMF, CRF 22 on x264 (including the fallback), quality 55 on
-VideoToolbox. File size follows the picture: on the same five minutes at NVENC P1, a hard game
-(Fortnite) came to about 32 Mbps (14 GB an hour) and an avatar to about 11, where the stream's
-6 Mbps left that game at a median QP of 36. The free-space check assumes 20 Mbps a video. "Same as the stream" keeps the stream's rate control and bitrate. A fixed bitrate
+VideoToolbox. File size follows the picture (measured 2026-11-25, NVENC P1): five minutes of a
+hard game (Fortnite) came to 31.5 Mbps (14 GB an hour) at a median QP of 21, where the stream's
+6 Mbps left the same footage at a median QP of 36. An 8.5-minute veadotube avatar recording that
+took 383 MB at 6 Mbps came to 2.6 MB. The free-space check assumes 20 Mbps a video. "Same as the stream" keeps the stream's rate control and bitrate. A fixed bitrate
 gives every game a different quality: at the stream's 6 Mbps a hard game spent up to 20% of its
 time at QP 35 or worse, while an easy picture was padded out to the full rate. A file that shares
 the stream's encoder (`00_Session.mov` while live) is always the stream's quality.
@@ -281,7 +282,8 @@ each later arm; `null` when the file never recorded. `status` is `recording`, `c
 (stopped early — the source was deleted, or it was disarmed) or `failed` (never recorded; `error`
 says why in plain words). A source armed more than once in a session appears several times, once
 per file, each with its own offset. A failed recording keeps its entry so the editor can see it was
-meant to exist.
+meant to exist. A WAV whose samples were all zero is deleted when the recording stops; its entry
+stays, with `"removed": "only silence"`.
 
 The manifest is written **when the session starts**, with every recording listed as `recording`,
 and rewritten when it stops with final values. A session that crashed therefore leaves a manifest

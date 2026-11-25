@@ -20,8 +20,8 @@ namespace iso {
 constexpr size_t kEncoderWarnThreshold = 3;
 
 // A constant-quality file has no set bitrate, so the free-space check assumes one per video.
-// At QP 22 a hard 1080p60 game measured about 32 Mbps and an avatar 11 or less; a session
-// mixes both.
+// At QP 22 a hard 1080p60 game measured 31.5 Mbps and a veadotube avatar well under 1; a
+// session mixes both.
 constexpr uint64_t kHighQualityBitsPerSec = 20000ull * 1000ull;
 
 // What a source's row says at a glance, so the list is readable without hovering.
