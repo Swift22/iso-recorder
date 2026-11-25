@@ -243,8 +243,10 @@ stream's quality settings copied to three or four full-canvas recordings starved
 (measured on a viewer's RTX 4070 SUPER: 16% of stream frames skipped).
 
 **Video quality** is its own setting, not the stream's. "High" (the default) records at a constant
-quality: QP 20 on NVENC, QSV and AMF, CRF 20 on x264 (including the fallback), quality 60 on
-VideoToolbox. "Same as the stream" keeps the stream's rate control and bitrate. A fixed bitrate
+quality: QP 22 on NVENC, QSV and AMF, CRF 22 on x264 (including the fallback), quality 55 on
+VideoToolbox. File size follows the picture: on the same five minutes at NVENC P1, a hard game
+(Fortnite) came to about 32 Mbps (14 GB an hour) and an avatar to about 11, where the stream's
+6 Mbps left that game at a median QP of 36. The free-space check assumes 20 Mbps a video. "Same as the stream" keeps the stream's rate control and bitrate. A fixed bitrate
 gives every game a different quality: at the stream's 6 Mbps a hard game spent up to 20% of its
 time at QP 35 or worse, while an easy picture was padded out to the full rate. A file that shares
 the stream's encoder (`00_Session.mov` while live) is always the stream's quality.
