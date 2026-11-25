@@ -453,6 +453,11 @@ void IsoDock::refreshSources()
 	obs_enum_sources(
 		[](void *param, obs_source_t *source) {
 			auto *self = static_cast<EnumCtx *>(param);
+			// obs_enum_sources still lists a deleted source while anything holds a reference.
+			// Listing it again would take a new one each refresh and keep it, and its name,
+			// alive for as long as OBS runs.
+			if (obs_source_removed(source))
+				return true;
 			const uint32_t flags = obs_source_get_output_flags(source);
 			if (!(flags & (OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO)))
 				return true;
@@ -524,6 +529,7 @@ void IsoDock::refreshSources()
 	browse_->setEnabled(!active);
 	encoder_->setEnabled(!active);
 	size_->setEnabled(!active);
+	quality_->setEnabled(!active);
 	withStream_->setEnabled(!active);
 	withRecording_->setEnabled(!active);
 	recordScene_->setEnabled(!active);
